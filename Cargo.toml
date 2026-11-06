@@ -4,5 +4,6 @@ members = [
     "crates/fileuc-daemon",
     "crates/fileuc-hook",
     "crates/fileuc-hud",
+    "crates/fileuc-convert",
 ]
 resolver = "2"
