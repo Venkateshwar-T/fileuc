@@ -158,6 +158,7 @@ pub fn parse_cf_hdrop(data_object: &IDataObject) -> Result<Vec<PathBuf>, DropErr
 
 #[implement(IDropTarget)]
 pub struct FileDropTarget {
+    #[allow(dead_code)]
     hwnd: HWND,
     sender: Sender<DropTargetEvent>,
     has_files: std::sync::atomic::AtomicBool,
