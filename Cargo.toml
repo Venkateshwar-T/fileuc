@@ -1,0 +1,6 @@
+[workspace]
+members = [
+    "crates/fileuc-types",
+    "crates/fileuc-daemon",
+]
+resolver = "2"

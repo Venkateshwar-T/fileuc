@@ -1,0 +1,26 @@
+[package]
+name = "fileuc-daemon"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "fileuc_daemon"
+path = "src/lib.rs"
+
+[[bin]]
+name = "fileuc"
+path = "src/main.rs"
+
+[dependencies]
+fileuc-types = { path = "../fileuc-types" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+    "Win32_System_Registry",
+    "Win32_System_Pipes",
+    "Win32_System_IO",
+    "Win32_Storage_FileSystem",
+    "Win32_Security"
+] }
