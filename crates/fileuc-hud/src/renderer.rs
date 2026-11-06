@@ -169,3 +169,122 @@ pub fn render_donut(state: &DonutState, theme: &Theme, pixmap: &mut Pixmap) {
         pixmap.stroke_path(&center_path, &stroke_paint, &stroke, Transform::identity(), None);
     }
 }
+
+pub fn render_progress(
+    tracker: &crate::progress_ring::ProgressTracker,
+    theme: &Theme,
+    pixmap: &mut Pixmap,
+) {
+    pixmap.fill(Color::TRANSPARENT);
+
+    let cx = pixmap.width() as f32 / 2.0;
+    let cy = pixmap.height() as f32 / 2.0;
+    let r = 40.0;
+    let stroke_w = 6.0;
+
+    // Draw background track
+    let mut bg_pb = PathBuilder::new();
+    bg_pb.push_circle(cx, cy, r);
+
+    if let Some(bg_path) = bg_pb.finish() {
+        let mut bg_paint = Paint::default();
+        bg_paint.set_color_rgba8(255, 255, 255, 35);
+        bg_paint.anti_alias = true;
+        let bg_stroke = Stroke {
+            width: stroke_w,
+            ..Default::default()
+        };
+        pixmap.stroke_path(&bg_path, &bg_paint, &bg_stroke, Transform::identity(), None);
+    }
+
+    match tracker.state() {
+        crate::progress_ring::ProgressState::Converting(fraction) => {
+            let f = fraction.clamp(0.01, 1.0);
+            let arc_steps = (40.0 * f).ceil() as usize;
+            let mut arc_pb = PathBuilder::new();
+            for s in 0..=arc_steps {
+                let t = s as f32 / arc_steps as f32;
+                let a = t * f * TAU;
+                let px = cx + r * a.sin();
+                let py = cy - r * a.cos();
+                if s == 0 {
+                    arc_pb.move_to(px, py);
+                } else {
+                    arc_pb.line_to(px, py);
+                }
+            }
+
+            if let Some(arc_path) = arc_pb.finish() {
+                let mut arc_paint = Paint::default();
+                arc_paint.set_color(theme.accent_color);
+                arc_paint.anti_alias = true;
+                let arc_stroke = Stroke {
+                    width: stroke_w,
+                    ..Default::default()
+                };
+                pixmap.stroke_path(&arc_path, &arc_paint, &arc_stroke, Transform::identity(), None);
+            }
+        }
+        crate::progress_ring::ProgressState::Success => {
+            let mut ring_pb = PathBuilder::new();
+            ring_pb.push_circle(cx, cy, r);
+            if let Some(ring_path) = ring_pb.finish() {
+                let mut ring_paint = Paint::default();
+                ring_paint.set_color_rgba8(46, 213, 115, 255); // Emerald green
+                ring_paint.anti_alias = true;
+                let stroke = Stroke {
+                    width: stroke_w,
+                    ..Default::default()
+                };
+                pixmap.stroke_path(&ring_path, &ring_paint, &stroke, Transform::identity(), None);
+            }
+
+            // Checkmark
+            let mut check_pb = PathBuilder::new();
+            check_pb.move_to(cx - 14.0, cy - 2.0);
+            check_pb.line_to(cx - 4.0, cy + 8.0);
+            check_pb.line_to(cx + 14.0, cy - 10.0);
+            if let Some(check_path) = check_pb.finish() {
+                let mut check_paint = Paint::default();
+                check_paint.set_color_rgba8(46, 213, 115, 255);
+                check_paint.anti_alias = true;
+                let stroke = Stroke {
+                    width: 4.5,
+                    ..Default::default()
+                };
+                pixmap.stroke_path(&check_path, &check_paint, &stroke, Transform::identity(), None);
+            }
+        }
+        crate::progress_ring::ProgressState::Failure(_) => {
+            let mut ring_pb = PathBuilder::new();
+            ring_pb.push_circle(cx, cy, r);
+            if let Some(ring_path) = ring_pb.finish() {
+                let mut ring_paint = Paint::default();
+                ring_paint.set_color_rgba8(255, 71, 87, 255); // Crimson
+                ring_paint.anti_alias = true;
+                let stroke = Stroke {
+                    width: stroke_w,
+                    ..Default::default()
+                };
+                pixmap.stroke_path(&ring_path, &ring_paint, &stroke, Transform::identity(), None);
+            }
+
+            // Cross
+            let mut cross_pb = PathBuilder::new();
+            cross_pb.move_to(cx - 10.0, cy - 10.0);
+            cross_pb.line_to(cx + 10.0, cy + 10.0);
+            cross_pb.move_to(cx + 10.0, cy - 10.0);
+            cross_pb.line_to(cx - 10.0, cy + 10.0);
+            if let Some(cross_path) = cross_pb.finish() {
+                let mut cross_paint = Paint::default();
+                cross_paint.set_color_rgba8(255, 71, 87, 255);
+                cross_paint.anti_alias = true;
+                let stroke = Stroke {
+                    width: 4.5,
+                    ..Default::default()
+                };
+                pixmap.stroke_path(&cross_path, &cross_paint, &stroke, Transform::identity(), None);
+            }
+        }
+    }
+}
