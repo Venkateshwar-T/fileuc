@@ -31,6 +31,7 @@ pub enum IpcError {
 
 pub struct IpcServer {
     running: Arc<AtomicBool>,
+    #[allow(dead_code)]
     thread_handle: Option<JoinHandle<()>>,
 }
 

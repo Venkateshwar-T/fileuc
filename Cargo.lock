@@ -1296,9 +1296,16 @@ dependencies = [
 name = "fileuc-daemon"
 version = "0.1.0"
 dependencies = [
+ "fileuc-convert",
+ "fileuc-hook",
+ "fileuc-hud",
+ "fileuc-settings",
  "fileuc-types",
+ "image",
  "serde",
  "serde_json",
+ "tempfile",
+ "tiny-skia 0.11.4",
  "windows 0.58.0",
 ]
 

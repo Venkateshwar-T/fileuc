@@ -13,6 +13,11 @@ path = "src/main.rs"
 
 [dependencies]
 fileuc-types = { path = "../fileuc-types" }
+fileuc-hook = { path = "../fileuc-hook" }
+fileuc-hud = { path = "../fileuc-hud" }
+fileuc-convert = { path = "../fileuc-convert" }
+fileuc-settings = { path = "../fileuc-settings" }
+tiny-skia = "0.11"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 windows = { version = "0.58", features = [
@@ -22,5 +27,11 @@ windows = { version = "0.58", features = [
     "Win32_System_Pipes",
     "Win32_System_IO",
     "Win32_Storage_FileSystem",
-    "Win32_Security"
+    "Win32_Security",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_System_Ole"
 ] }
+
+[dev-dependencies]
+tempfile = "3"
+image = { version = "0.25", default-features = false, features = ["png"] }
