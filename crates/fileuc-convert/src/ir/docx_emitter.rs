@@ -38,7 +38,7 @@ pub fn emit_docx(doc: &DocumentIR, output: &Path) -> Result<(), ConvertError> {
 
     for (page_idx, page) in doc.pages.iter().enumerate() {
         for (img_i, img) in page.images.iter().enumerate() {
-            let filename = format!("image_p{}_{}.png", page_idx + 1, img_i + 1);
+            let filename = format!("image{}.png", media_files.len() + 1);
             let rel_id = media_files.len() + 2; // rId1 is styles.xml
             media_files.push((filename, img.data.clone()));
             image_rel_map.insert((page_idx, img_i), rel_id);

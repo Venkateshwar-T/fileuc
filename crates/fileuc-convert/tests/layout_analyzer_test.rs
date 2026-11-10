@@ -102,8 +102,7 @@ fn test_multi_column_xy_cut() {
     let page = analyze_page_layout(raw);
     // Col1 Line 1 and Line 2 should be read before Col2 Line 1
     assert!(page.blocks.len() >= 2);
-    if let (BlockIR::Paragraph(p1), BlockIR::Paragraph(p2)) = (&page.blocks[0], &page.blocks[1]) {
-        assert!(p1.lines[0].runs[0].text.contains("Col1"));
-        assert!(p2.lines[0].runs[0].text.contains("Col2"));
-    }
+    let (BlockIR::Paragraph(p1), BlockIR::Paragraph(p2)) = (&page.blocks[0], &page.blocks[1]);
+    assert!(p1.lines[0].runs[0].text.contains("Col1"));
+    assert!(p2.lines[0].runs[0].text.contains("Col2"));
 }

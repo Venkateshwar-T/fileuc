@@ -739,18 +739,7 @@ pub fn pdf_to_docx(src: &Path, output: &Path) -> Result<(), ConvertError> {
         return Err(ConvertError::SourceNotFound(src.to_string_lossy().to_string()));
     }
 
-    // 1. Try high-fidelity Document IR reconstruction engine
-    if let Ok(()) = crate::ir::reconstruct_pdf_to_docx(src, output) {
-        if output.exists() {
-            if let Ok(meta) = std::fs::metadata(output) {
-                if meta.len() > 0 {
-                    return Ok(());
-                }
-            }
-        }
-    }
-
-    // 2. Structured layout analysis via PDFium fallback
+    // 1. Try structured layout analysis via PDFium first (load document ONCE)
     if let Ok(pdfium) = crate::pdfium::init_pdfium() {
         if let Ok(document) = pdfium.load_pdf_from_file(src, None) {
             if let Ok(layouts) = crate::pdfium::extract_structured_layout_from_doc(&document) {
@@ -759,11 +748,19 @@ pub fn pdf_to_docx(src: &Path, output: &Path) -> Result<(), ConvertError> {
                     if has_text {
                         return render_structured_layout_to_docx(src, &layouts, output);
                     } else {
-                        // PDF has pages but 0 text objects -> Image-only PDF!
-                        // Render each page to a crisp high-res image and embed into DOCX with exact dimensions,
-                        // and run Windows OCR so the DOCX has BOTH the visual fidelity and editable text!
                         return render_image_pdf_doc_to_docx(&document, &layouts, output);
                     }
+                }
+            }
+        }
+    }
+
+    // 2. High-fidelity Document IR reconstruction engine
+    if let Ok(()) = crate::ir::reconstruct_pdf_to_docx(src, output) {
+        if output.exists() {
+            if let Ok(meta) = std::fs::metadata(output) {
+                if meta.len() > 0 {
+                    return Ok(());
                 }
             }
         }

@@ -20,7 +20,23 @@ pub fn extract_document_ir(src: &Path) -> Result<DocumentIR, ConvertError> {
 
     for (page_idx, page) in document.pages().iter().enumerate() {
         let raw = pdfium_extractor::extract_raw_page_elements(&page, page_idx + 1)?;
-        let page_ir = layout_analyzer::analyze_page_layout(raw);
+        let mut page_ir = layout_analyzer::analyze_page_layout(raw);
+
+        // Fallback for image-only / scanned pages:
+        if page_ir.blocks.is_empty() && page_ir.tables.is_empty() && page_ir.images.is_empty() {
+            let target_width = (page_ir.width_pt * 2.5).clamp(1600.0, 2400.0) as i32;
+            if let Ok(img) = crate::pdfium::render_page_to_image_from_doc(&document, page_idx, target_width) {
+                let mut png_bytes = Vec::new();
+                if img.write_to(&mut std::io::Cursor::new(&mut png_bytes), image::ImageFormat::Png).is_ok() {
+                    page_ir.images.push(ImageIR {
+                        bounds: Rect::new(0.0, 0.0, page_ir.width_pt, page_ir.height_pt),
+                        data: png_bytes,
+                        format: ImageFormat::Png,
+                    });
+                }
+            }
+        }
+
         doc_ir.pages.push(page_ir);
     }
 
