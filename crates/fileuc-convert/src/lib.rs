@@ -1,7 +1,15 @@
 pub mod archive;
+pub mod doc;
+pub mod excel;
 pub mod heic;
 pub mod image;
+pub mod indic;
+pub mod ir;
 pub mod media;
+pub mod ocr;
 pub mod output;
 pub mod pdf;
+pub mod pdfium;
+pub mod pptx;
 pub mod svg;
+pub mod text;
