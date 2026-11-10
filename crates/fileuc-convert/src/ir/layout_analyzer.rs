@@ -20,7 +20,7 @@ pub fn analyze_page_layout(raw: RawPageContent) -> PageIR {
     }
 
     // 2. Process Shapes and Lines
-    for path in raw.paths {
+    for path in &raw.paths {
         let w = (path.x2 - path.x1).abs();
         let h = (path.y2 - path.y1).abs();
         let min_x = path.x1.min(path.x2);
@@ -41,9 +41,14 @@ pub fn analyze_page_layout(raw: RawPageContent) -> PageIR {
         });
     }
 
-    // 3. Recursive XY-Cut & Reading Order Segmentation on text
-    if !raw.text_items.is_empty() {
-        let columns = partition_columns(raw.text_items, raw.width_pt);
+    // 3. Detect and extract Tables (Lattice)
+    let mut text_items = raw.text_items;
+    let tables = crate::ir::table_detector::detect_tables(&raw.paths, &mut text_items);
+    page.tables = tables;
+
+    // 4. Recursive XY-Cut & Reading Order Segmentation on remaining text
+    if !text_items.is_empty() {
+        let columns = partition_columns(text_items, raw.width_pt);
         for col_items in columns {
             let paragraphs = cluster_into_paragraphs(col_items);
             for p in paragraphs {
