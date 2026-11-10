@@ -4,3 +4,4 @@ pub mod pdfium_extractor;
 pub mod pptx_emitter;
 pub mod table_detector;
 pub mod types;
+pub mod xlsx_emitter;
