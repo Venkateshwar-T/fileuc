@@ -30,9 +30,9 @@ pub fn set_auto_start(enabled: bool) -> Result<(), AutoStartError> {
         .ok()
         .map_err(AutoStartError::WindowsError)?;
 
-        let result = if enabled {
+        let err = if enabled {
             let current_exe = env::current_exe().map_err(|_| AutoStartError::CurrentExeUnavailable)?;
-            let exe_path_str = format!("\"{}\"", current_exe.to_string_lossy());
+            let exe_path_str = format!("\"{}\" --autostart", current_exe.to_string_lossy());
             let wide_exe = HSTRING::from(exe_path_str.as_str());
 
             RegSetValueExW(
@@ -46,11 +46,17 @@ pub fn set_auto_start(enabled: bool) -> Result<(), AutoStartError> {
                 )),
             )
         } else {
-            RegDeleteValueW(key, PCWSTR::from_raw(app_name.as_ptr()))
+            let del_err = RegDeleteValueW(key, PCWSTR::from_raw(app_name.as_ptr()));
+            use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS};
+            if del_err == ERROR_FILE_NOT_FOUND {
+                ERROR_SUCCESS
+            } else {
+                del_err
+            }
         };
 
         let _ = RegCloseKey(key);
-        result.ok().map_err(AutoStartError::WindowsError)?;
+        err.ok().map_err(AutoStartError::WindowsError)?;
     }
 
     Ok(())

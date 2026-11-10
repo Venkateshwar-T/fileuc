@@ -14,15 +14,23 @@ tiny-skia = "0.11"
 resvg = "0.43"
 usvg = "0.43"
 pdf-writer = "0.12"
+pdfium-render = { version = "0.9", default-features = false, features = ["pdfium_7543", "image_latest", "thread_safe"] }
 lopdf = "0.34"
+md-5 = "0.10"
+base64 = "0.22"
 zip = { version = "2", default-features = false, features = ["deflate", "time"] }
 flate2 = "1.0"
 tar = "0.4"
 tempfile = "3"
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 windows = { version = "0.58", features = [
     "Win32_Graphics_Imaging",
     "Win32_System_Com",
     "Win32_Foundation",
+    "Media_Ocr",
+    "Graphics_Imaging",
+    "Storage_Streams",
+    "Foundation",
 ] }
 
 [dev-dependencies]

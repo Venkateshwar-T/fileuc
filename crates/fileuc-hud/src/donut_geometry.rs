@@ -44,11 +44,16 @@ impl DonutLayout {
     }
 
     pub fn hit_test(&self, x: f32, y: f32) -> HitResult {
+        self.hit_test_with_slack(x, y, 0.0)
+    }
+
+    pub fn hit_test_with_slack(&self, x: f32, y: f32, slack: f32) -> HitResult {
         let r_sq = x * x + y * y;
         if r_sq < self.inner_r * self.inner_r {
             return HitResult::CenterHole;
         }
-        if r_sq > self.outer_r * self.outer_r {
+        let max_r = self.outer_r + slack;
+        if r_sq > max_r * max_r {
             return HitResult::Outside;
         }
 

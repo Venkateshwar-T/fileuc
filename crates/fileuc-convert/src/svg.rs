@@ -72,9 +72,10 @@ pub fn render_svg(
 
     match format {
         ImageFormat::Jpeg => {
-            let mut file = std::fs::File::create(&out_path)
+            let file = std::fs::File::create(&out_path)
                 .map_err(|e| ConvertError::IoError(e.to_string()))?;
-            let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut file, 90);
+            let mut writer = std::io::BufWriter::new(file);
+            let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut writer, 90);
             encoder
                 .encode_image(&dyn_img)
                 .map_err(|e| ConvertError::ConverterError(e.to_string()))?;

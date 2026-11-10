@@ -1,14 +1,59 @@
 use fileuc_types::ConvertError;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
+
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 pub fn find_ffmpeg() -> Option<PathBuf> {
-    if let Ok(output) = Command::new("ffmpeg").arg("-version").output() {
-        if output.status.success() {
-            return Some(PathBuf::from("ffmpeg"));
-        }
-    }
-    None
+    static CACHED: OnceLock<Option<PathBuf>> = OnceLock::new();
+    CACHED
+        .get_or_init(|| {
+            // 1. Check next to current executable
+            if let Ok(exe) = std::env::current_exe() {
+                if let Some(parent) = exe.parent() {
+                    let next_to_exe = parent.join("ffmpeg.exe");
+                    if next_to_exe.exists() {
+                        return Some(next_to_exe);
+                    }
+                    let engines_ffmpeg = parent.join("engines").join("ffmpeg").join("ffmpeg.exe");
+                    if engines_ffmpeg.exists() {
+                        return Some(engines_ffmpeg);
+                    }
+                }
+            }
+
+            // 2. Check standard system installations
+            let candidates = [
+                PathBuf::from(r"C:\Program Files\Filee\engines\ffmpeg\ffmpeg.exe"),
+                PathBuf::from(r"C:\Program Files\ffmpeg\bin\ffmpeg.exe"),
+                PathBuf::from(r"C:\ffmpeg\bin\ffmpeg.exe"),
+                PathBuf::from("ffmpeg.exe"),
+            ];
+            for c in &candidates {
+                if c.exists() {
+                    return Some(c.clone());
+                }
+            }
+
+            // 3. Fall back to system PATH
+            let mut cmd = Command::new("ffmpeg");
+            cmd.arg("-version");
+            #[cfg(windows)]
+            {
+                cmd.creation_flags(CREATE_NO_WINDOW);
+            }
+            if let Ok(output) = cmd.output() {
+                if output.status.success() {
+                    return Some(PathBuf::from("ffmpeg"));
+                }
+            }
+            None
+        })
+        .clone()
 }
 
 pub fn video_to_gif(ffmpeg: &Path, src: &Path, output: &Path) -> Result<(), ConvertError> {
@@ -16,15 +61,18 @@ pub fn video_to_gif(ffmpeg: &Path, src: &Path, output: &Path) -> Result<(), Conv
         return Err(ConvertError::SourceNotFound(src.to_string_lossy().to_string()));
     }
 
-    let status = Command::new(ffmpeg)
-        .args([
-            "-i",
-            src.to_str().unwrap_or_default(),
-            "-vf",
-            "fps=15,scale=480:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse",
-            "-y",
-            output.to_str().unwrap_or_default(),
-        ])
+    let mut cmd = Command::new(ffmpeg);
+    cmd.arg("-i")
+        .arg(src)
+        .arg("-vf")
+        .arg("fps=15,scale=480:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse")
+        .arg("-y")
+        .arg(output);
+    #[cfg(windows)]
+    {
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let status = cmd
         .status()
         .map_err(|e| ConvertError::IoError(format!("Failed to spawn ffmpeg: {}", e)))?;
 
@@ -39,18 +87,21 @@ pub fn extract_audio(ffmpeg: &Path, src: &Path, output: &Path) -> Result<(), Con
         return Err(ConvertError::SourceNotFound(src.to_string_lossy().to_string()));
     }
 
-    let status = Command::new(ffmpeg)
-        .args([
-            "-i",
-            src.to_str().unwrap_or_default(),
-            "-vn",
-            "-c:a",
-            "libmp3lame",
-            "-q:a",
-            "2",
-            "-y",
-            output.to_str().unwrap_or_default(),
-        ])
+    let mut cmd = Command::new(ffmpeg);
+    cmd.arg("-i")
+        .arg(src)
+        .arg("-vn")
+        .arg("-c:a")
+        .arg("libmp3lame")
+        .arg("-q:a")
+        .arg("2")
+        .arg("-y")
+        .arg(output);
+    #[cfg(windows)]
+    {
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let status = cmd
         .status()
         .map_err(|e| ConvertError::IoError(format!("Failed to spawn ffmpeg: {}", e)))?;
 
@@ -65,19 +116,22 @@ pub fn compress_video(ffmpeg: &Path, src: &Path, output: &Path) -> Result<(), Co
         return Err(ConvertError::SourceNotFound(src.to_string_lossy().to_string()));
     }
 
-    let status = Command::new(ffmpeg)
-        .args([
-            "-i",
-            src.to_str().unwrap_or_default(),
-            "-vcodec",
-            "libx264",
-            "-crf",
-            "28",
-            "-preset",
-            "fast",
-            "-y",
-            output.to_str().unwrap_or_default(),
-        ])
+    let mut cmd = Command::new(ffmpeg);
+    cmd.arg("-i")
+        .arg(src)
+        .arg("-vcodec")
+        .arg("libx264")
+        .arg("-crf")
+        .arg("28")
+        .arg("-preset")
+        .arg("fast")
+        .arg("-y")
+        .arg(output);
+    #[cfg(windows)]
+    {
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let status = cmd
         .status()
         .map_err(|e| ConvertError::IoError(format!("Failed to spawn ffmpeg: {}", e)))?;
 

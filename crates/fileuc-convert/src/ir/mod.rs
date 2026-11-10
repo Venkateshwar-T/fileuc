@@ -5,3 +5,39 @@ pub mod pptx_emitter;
 pub mod table_detector;
 pub mod types;
 pub mod xlsx_emitter;
+
+use fileuc_types::ConvertError;
+use std::path::Path;
+pub use types::*;
+
+pub fn extract_document_ir(src: &Path) -> Result<DocumentIR, ConvertError> {
+    let pdfium = crate::pdfium::init_pdfium()?;
+    let document = pdfium
+        .load_pdf_from_file(src, None)
+        .map_err(|e| ConvertError::ConverterError(format!("Pdfium failed to load PDF: {}", e)))?;
+
+    let mut doc_ir = DocumentIR::new(src.file_stem().map(|s| s.to_string_lossy().to_string()));
+
+    for (page_idx, page) in document.pages().iter().enumerate() {
+        let raw = pdfium_extractor::extract_raw_page_elements(&page, page_idx + 1)?;
+        let page_ir = layout_analyzer::analyze_page_layout(raw);
+        doc_ir.pages.push(page_ir);
+    }
+
+    Ok(doc_ir)
+}
+
+pub fn reconstruct_pdf_to_pptx(src: &Path, output: &Path) -> Result<(), ConvertError> {
+    let doc_ir = extract_document_ir(src)?;
+    pptx_emitter::emit_pptx(&doc_ir, output)
+}
+
+pub fn reconstruct_pdf_to_docx(src: &Path, output: &Path) -> Result<(), ConvertError> {
+    let doc_ir = extract_document_ir(src)?;
+    docx_emitter::emit_docx(&doc_ir, output)
+}
+
+pub fn reconstruct_pdf_to_xlsx(src: &Path, output: &Path) -> Result<(), ConvertError> {
+    let doc_ir = extract_document_ir(src)?;
+    xlsx_emitter::emit_xlsx(&doc_ir, output)
+}

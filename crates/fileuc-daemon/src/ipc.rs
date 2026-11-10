@@ -30,14 +30,18 @@ pub enum IpcError {
 }
 
 pub struct IpcServer {
+    pipe_name: String,
     running: Arc<AtomicBool>,
-    #[allow(dead_code)]
     thread_handle: Option<JoinHandle<()>>,
 }
 
 impl Drop for IpcServer {
     fn drop(&mut self) {
         self.running.store(false, Ordering::SeqCst);
+        let _ = send_message(&self.pipe_name, IpcMessage::Quit);
+        if let Some(h) = self.thread_handle.take() {
+            let _ = h.join();
+        }
     }
 }
 
@@ -99,6 +103,7 @@ pub fn start_server(
     thread::sleep(std::time::Duration::from_millis(50));
 
     Ok(IpcServer {
+        pipe_name: pipe_name.to_string(),
         running,
         thread_handle: Some(thread_handle),
     })

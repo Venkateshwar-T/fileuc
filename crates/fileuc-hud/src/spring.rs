@@ -22,14 +22,23 @@ impl Spring {
         self.target = target;
     }
 
+    pub fn set_velocity(&mut self, velocity: f32) {
+        self.velocity = velocity;
+    }
+
     pub fn value(&self) -> f32 {
         self.value
     }
 
     pub fn tick(&mut self, dt: f32) -> bool {
-        let force = self.stiffness * (self.target - self.value) - self.damping * self.velocity;
-        self.velocity += force * dt;
-        self.value += self.velocity * dt;
+        // 4 sub-steps for ultra-smooth numerical stability regardless of frame delta jitter
+        let substeps = 4;
+        let sub_dt = dt / (substeps as f32);
+        for _ in 0..substeps {
+            let force = self.stiffness * (self.target - self.value) - self.damping * self.velocity;
+            self.velocity += force * sub_dt;
+            self.value += self.velocity * sub_dt;
+        }
 
         let moving = self.velocity.abs() > 0.0005 || (self.target - self.value).abs() > 0.0005;
         if !moving {

@@ -23,3 +23,67 @@ fn convert_locked_file_returns_source_locked() {
     let result = convert_image(&src, ImageFormat::Jpeg, &ImageOptions::default());
     assert!(result.is_err());
 }
+
+#[test]
+fn png_to_jpeg_produces_valid_jpeg_with_extension() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("test.png");
+    image::RgbaImage::new(10, 10).save(&src).unwrap();
+    let opts = ImageOptions {
+        custom_ext: Some("jpeg"),
+        ..Default::default()
+    };
+    let result = convert_image(&src, ImageFormat::Jpeg, &opts).unwrap();
+    assert!(result.exists());
+    assert_eq!(result.extension().unwrap(), "jpeg");
+    let bytes = std::fs::read(&result).unwrap();
+    assert_eq!(&bytes[0..2], &[0xFF, 0xD8]);
+}
+
+#[test]
+fn image_to_svg_produces_valid_svg_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("test.png");
+    image::RgbaImage::new(16, 16).save(&src).unwrap();
+    let dst = tmp.path().join("test.svg");
+    fileuc_convert::image::image_to_svg(&src, &dst).unwrap();
+    assert!(dst.exists());
+    let content = std::fs::read_to_string(&dst).unwrap();
+    assert!(content.contains("<svg"));
+    assert!(content.contains("<image"));
+    assert!(content.contains("data:image/png;base64,"));
+}
+
+#[test]
+fn ico_conversion_produces_authentic_multi_res_icon() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("icon_source.png");
+    image::RgbaImage::new(128, 128).save(&src).unwrap();
+    let result = convert_image(&src, ImageFormat::Ico, &ImageOptions::default()).unwrap();
+    assert!(result.exists());
+    assert_eq!(result.extension().unwrap(), "ico");
+
+    let bytes = std::fs::read(&result).unwrap();
+    assert!(bytes.len() > 118, "ICO file must contain header and image data");
+
+    // Check ICONDIR header: reserved = 0, type = 1 (ICO), count = 7
+    let reserved = u16::from_le_bytes([bytes[0], bytes[1]]);
+    let res_type = u16::from_le_bytes([bytes[2], bytes[3]]);
+    let count = u16::from_le_bytes([bytes[4], bytes[5]]);
+    assert_eq!(reserved, 0);
+    assert_eq!(res_type, 1);
+    assert_eq!(count, 7, "Must contain all 7 standard Windows resolutions");
+
+    // First entry should be 256px (dim byte = 0)
+    assert_eq!(bytes[6], 0, "256px icon width is encoded as 0");
+    assert_eq!(bytes[7], 0, "256px icon height is encoded as 0");
+
+    // Last entry should be 16px
+    let last_entry_offset = 6 + (6 * 16);
+    assert_eq!(bytes[last_entry_offset], 16, "16px icon width");
+    assert_eq!(bytes[last_entry_offset + 1], 16, "16px icon height");
+
+    // Verify first payload starts with standard PNG signature (89 50 4E 47 0D 0A 1A 0A)
+    let first_img_offset = u32::from_le_bytes([bytes[18], bytes[19], bytes[20], bytes[21]]) as usize;
+    assert_eq!(&bytes[first_img_offset..first_img_offset + 8], &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+}

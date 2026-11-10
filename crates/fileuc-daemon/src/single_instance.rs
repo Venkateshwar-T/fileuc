@@ -1,5 +1,7 @@
 use windows::core::{HSTRING, PCWSTR};
-use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE};
+use windows::Win32::Foundation::{
+    CloseHandle, GetLastError, SetLastError, ERROR_ALREADY_EXISTS, HANDLE, WIN32_ERROR,
+};
 use windows::Win32::System::Threading::CreateMutexW;
 
 #[derive(Debug)]
@@ -28,6 +30,7 @@ unsafe impl Sync for SingleInstanceGuard {}
 pub fn acquire(name: &str) -> Result<SingleInstanceGuard, InstanceError> {
     let wide_name = HSTRING::from(name);
     unsafe {
+        SetLastError(WIN32_ERROR(0));
         let handle = CreateMutexW(None, true, PCWSTR::from_raw(wide_name.as_ptr()))
             .map_err(InstanceError::WindowsError)?;
 
