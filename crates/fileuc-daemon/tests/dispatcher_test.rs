@@ -40,7 +40,7 @@ fn dispatch_png_to_jpg() {
 }
 
 #[test]
-fn dispatch_docx_to_pptx() {
+fn dispatch_docx_to_pdf() {
     let tmp = tempfile::tempdir().unwrap();
     let src = tmp.path().join("input.docx");
 
@@ -50,7 +50,7 @@ fn dispatch_docx_to_pptx() {
     zip.start_file("word/document.xml", options).unwrap();
     std::io::Write::write_all(
         &mut zip,
-        br#"<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Slide Title</w:t></w:r></w:p></w:body></w:document>"#,
+        br#"<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Document Content</w:t></w:r></w:p></w:body></w:document>"#,
     ).unwrap();
     zip.finish().unwrap();
 
@@ -62,7 +62,7 @@ fn dispatch_docx_to_pptx() {
     let handle = dispatch(
         ConversionRequest {
             files: vec![src],
-            action: ConversionAction::DocxToPptx,
+            action: ConversionAction::DocToPdf,
             settings,
         },
         |_| {},
@@ -72,7 +72,38 @@ fn dispatch_docx_to_pptx() {
     assert!(result.errors.is_empty());
     assert_eq!(result.outputs.len(), 1);
     assert!(result.outputs[0].exists());
-    assert_eq!(result.outputs[0].extension().unwrap(), "pptx");
+    assert_eq!(result.outputs[0].extension().unwrap(), "pdf");
+}
+
+#[test]
+fn dispatch_pdf_to_docx() {
+    let tmp = tempfile::tempdir().unwrap();
+    let img = tmp.path().join("page.png");
+    image::RgbaImage::new(10, 10).save(&img).unwrap();
+    let src = tmp.path().join("input.pdf");
+    fileuc_convert::pdf::images_to_pdf(&[img], &src).unwrap();
+
+    let settings = Arc::new(AppSettings {
+        output_mode: OutputMode::NextToOriginal,
+        ..AppSettings::default()
+    });
+
+    let handle = dispatch(
+        ConversionRequest {
+            files: vec![src],
+            action: ConversionAction::PdfToDocx,
+            settings,
+        },
+        |_| {},
+    );
+
+    let result = handle.join().unwrap();
+    if fileuc_convert::doc::find_pdf2docx().is_some() {
+        assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+        assert_eq!(result.outputs.len(), 1);
+        assert!(result.outputs[0].exists());
+        assert_eq!(result.outputs[0].extension().unwrap(), "docx");
+    }
 }
 
 #[test]
@@ -244,34 +275,4 @@ fn test_dispatch_create_zip_with_progress() {
     let log = progress_log.lock().unwrap();
     assert!(!log.is_empty());
     assert!((log.last().unwrap() - 1.0).abs() < 0.001);
-}
-
-#[test]
-fn test_dispatch_pdf_to_xlsx_action() {
-    let tmp = tempfile::tempdir().unwrap();
-    let src = tmp.path().join("test.pdf");
-
-    // Write a minimal valid PDF file
-    let raw_pdf = b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R >>\nendobj\n4 0 obj\n<< /Length 44 >>\nstream\nBT /F1 12 Tf 50 700 Td (Table Cell Data) Tj ET\nendstream\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF";
-    std::fs::write(&src, raw_pdf).unwrap();
-
-    let settings = Arc::new(AppSettings {
-        output_mode: OutputMode::NextToOriginal,
-        ..AppSettings::default()
-    });
-
-    let handle = dispatch(
-        ConversionRequest {
-            files: vec![src],
-            action: ConversionAction::PdfToXlsx,
-            settings,
-        },
-        |_| {},
-    );
-
-    let result = handle.join().unwrap();
-    assert!(result.errors.is_empty(), "Dispatcher encountered errors: {:?}", result.errors);
-    assert_eq!(result.outputs.len(), 1);
-    assert!(result.outputs[0].exists());
-    assert_eq!(result.outputs[0].extension().unwrap(), "xlsx");
 }

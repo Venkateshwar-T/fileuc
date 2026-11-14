@@ -1,4 +1,3 @@
-use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
@@ -15,11 +14,7 @@ use windows::Win32::System::Pipes::{
     PIPE_TYPE_MESSAGE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum IpcMessage {
-    OpenSettings,
-    Quit,
-}
+pub use fileuc_types::IpcMessage;
 
 #[derive(Debug)]
 pub enum IpcError {
@@ -74,7 +69,12 @@ pub fn start_server(
                 }
 
                 let connected = ConnectNamedPipe(handle, None);
-                if connected.is_ok() || connected.is_err() {
+                let is_connected = match connected {
+                    Ok(_) => true,
+                    Err(e) if e.code() == windows::Win32::Foundation::WIN32_ERROR(535).to_hresult() => true,
+                    Err(_) => false,
+                };
+                if is_connected {
                     let mut buffer = [0u8; 1024];
                     let mut bytes_read = 0u32;
                     if ReadFile(

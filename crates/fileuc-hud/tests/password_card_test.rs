@@ -1,8 +1,39 @@
-use fileuc_hud::password_card::{render_password_card, PasswordCardState};
+use fileuc_hud::password_card::{render_password_card, PasswordCardMode, PasswordCardState};
 use fileuc_hud::theme::Theme;
 use fileuc_hud::FontContext;
 use std::path::PathBuf;
 use tiny_skia::Pixmap;
+
+#[test]
+fn test_password_card_unlock_mode() {
+    let mut state = PasswordCardState::new_with_mode(
+        PathBuf::from("C:\\test\\secure_doc.pdf"),
+        1.0,
+        PasswordCardMode::Unlock,
+    );
+
+    assert_eq!(state.mode, PasswordCardMode::Unlock);
+    assert_eq!(state.file_name, "secure_doc.pdf");
+    assert_eq!(state.password_input, "");
+
+    state.push_char('A');
+    state.push_char('B');
+    state.push_char('C');
+    assert_eq!(state.password_input, "ABC");
+
+    for _ in 0..60 {
+        state.tick(1.0 / 60.0);
+    }
+    assert!(state.pop_in.value() > 0.95);
+
+    let mut pixmap = Pixmap::new(400, 400).unwrap();
+    let theme = Theme::dark();
+    let fonts = FontContext::new();
+
+    render_password_card(&state, &theme, &fonts, &mut pixmap);
+    let non_transparent = pixmap.data().chunks_exact(4).filter(|p| p[3] > 0).count();
+    assert!(non_transparent > 1000, "Pixmap should render unlock password card");
+}
 
 #[test]
 fn test_password_card_state_input_and_clear() {

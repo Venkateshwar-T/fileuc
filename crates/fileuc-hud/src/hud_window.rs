@@ -18,11 +18,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 const WINDOW_CLASS_NAME: PCWSTR = w!("FileUC_HudWindow");
 
-pub const DEFAULT_OUTER_RADIUS_DIP: f32 = 150.0;
-pub const HOLE_RATIO: f32 = 0.42;
-pub const POP_OUT_DIP: f32 = 7.0;
-pub const SHADOW_MARGIN_DIP: f32 = 14.0;
-pub const BASE_SIDE_DIP: f32 = 384.0; // Ample canvas space for 150px outer radius donut, 340px modal cards, and 20px ambient blur margins
+pub const BASE_SIDE_DIP: f32 = 480.0; // Ample canvas space for 150px outer radius donut, sub-slices fan, 380px modal cards, and outer slice badges
 
 unsafe extern "system" fn hud_wnd_proc(
     hwnd: HWND,

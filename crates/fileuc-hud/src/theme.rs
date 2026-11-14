@@ -14,7 +14,6 @@ pub struct Theme {
     pub danger_border: Color,
     pub danger_text: Color,
     pub border_subtle: Color,
-    pub accent_color: Color,
 }
 
 impl Theme {
@@ -32,7 +31,6 @@ impl Theme {
             danger_border: Color::from_rgba8(240, 100, 100, 200),     // Soft red border
             danger_text: Color::from_rgba8(255, 128, 128, 255),
             border_subtle: Color::from_rgba8(255, 255, 255, 22),
-            accent_color: Color::from_rgba8(112, 102, 224, 255),
         }
     }
 
@@ -50,7 +48,6 @@ impl Theme {
             danger_border: Color::from_rgba8(235, 90, 90, 190),
             danger_text: Color::from_rgba8(215, 45, 45, 255),
             border_subtle: Color::from_rgba8(0, 0, 0, 20),
-            accent_color: Color::from_rgba8(108, 99, 216, 255),
         }
     }
 

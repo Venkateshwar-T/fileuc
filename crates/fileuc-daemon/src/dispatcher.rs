@@ -30,7 +30,6 @@ pub fn dispatch(
             on_progress(1.0);
             return result;
         }
-        let total = request.files.len() as f32;
 
         match request.action {
             ConversionAction::ToPng
@@ -76,29 +75,14 @@ pub fn dispatch(
                     fileuc_convert::image::image_to_svg(src, dst)
                 });
             }
-            ConversionAction::PdfToDocx => {
-                process_with_resolved_output(&request.files, "docx", &request.settings, &on_progress, &mut result, |src, dst| {
-                    fileuc_convert::pdf::pdf_to_docx(src, dst)
-                });
-            }
-            ConversionAction::PdfToDoc => {
-                process_with_resolved_output(&request.files, "doc", &request.settings, &on_progress, &mut result, |src, dst| {
-                    fileuc_convert::pdf::pdf_to_doc(src, dst)
-                });
-            }
             ConversionAction::DocToPdf => {
                 process_with_resolved_output(&request.files, "pdf", &request.settings, &on_progress, &mut result, |src, dst| {
                     fileuc_convert::doc::doc_to_pdf(src, dst)
                 });
             }
-            ConversionAction::PdfToPptx => {
-                process_with_resolved_output(&request.files, "pptx", &request.settings, &on_progress, &mut result, |src, dst| {
-                    fileuc_convert::pptx::pdf_to_pptx(src, dst)
-                });
-            }
-            ConversionAction::PdfToXlsx => {
-                process_with_resolved_output(&request.files, "xlsx", &request.settings, &on_progress, &mut result, |src, dst| {
-                    fileuc_convert::pdf::pdf_to_xlsx(src, dst)
+            ConversionAction::PdfToDocx => {
+                process_with_resolved_output(&request.files, "docx", &request.settings, &on_progress, &mut result, |src, dst| {
+                    fileuc_convert::doc::pdf_to_docx(src, dst)
                 });
             }
             ConversionAction::PptxToPdf => {
@@ -106,14 +90,34 @@ pub fn dispatch(
                     fileuc_convert::pptx::pptx_to_pdf(src, dst)
                 });
             }
-            ConversionAction::DocxToPptx => {
-                process_with_resolved_output(&request.files, "pptx", &request.settings, &on_progress, &mut result, |src, dst| {
-                    fileuc_convert::pptx::docx_to_pptx(src, dst)
+            ConversionAction::MdToPdf => {
+                process_with_resolved_output(&request.files, "pdf", &request.settings, &on_progress, &mut result, |src, dst| {
+                    fileuc_convert::text::md_to_pdf(src, dst)
                 });
             }
-            ConversionAction::PptxToDocx => {
-                process_with_resolved_output(&request.files, "docx", &request.settings, &on_progress, &mut result, |src, dst| {
-                    fileuc_convert::pptx::pptx_to_docx(src, dst)
+            ConversionAction::TxtToPdf => {
+                process_with_resolved_output(&request.files, "pdf", &request.settings, &on_progress, &mut result, |src, dst| {
+                    fileuc_convert::text::txt_to_pdf(src, dst)
+                });
+            }
+            ConversionAction::HtmlToPdf => {
+                process_with_resolved_output(&request.files, "pdf", &request.settings, &on_progress, &mut result, |src, dst| {
+                    fileuc_convert::text::html_to_pdf(src, dst)
+                });
+            }
+            ConversionAction::ExcelToPdf => {
+                process_with_resolved_output(&request.files, "pdf", &request.settings, &on_progress, &mut result, |src, dst| {
+                    fileuc_convert::excel::excel_to_pdf(src, dst)
+                });
+            }
+            ConversionAction::PdfToExcel => {
+                process_with_resolved_output(&request.files, "xlsx", &request.settings, &on_progress, &mut result, |src, dst| {
+                    fileuc_convert::excel::pdf_to_excel(src, dst)
+                });
+            }
+            ConversionAction::PdfOcr => {
+                process_with_resolved_output(&request.files, "pdf", &request.settings, &on_progress, &mut result, |src, dst| {
+                    fileuc_convert::ocr_searchable::pdf_to_searchable_pdf(src, dst)
                 });
             }
             ConversionAction::Resize => {
@@ -227,16 +231,11 @@ pub fn dispatch(
                     compress_pdf(src, dst)
                 });
             }
-            ConversionAction::ExcelToPdf => {
-                process_with_resolved_output(&request.files, "pdf", &request.settings, &on_progress, &mut result, |src, dst| {
-                    fileuc_convert::excel::excel_to_pdf(src, dst)
-                });
-            }
             ConversionAction::LockPdf => {
-                process_each_file(&request.files, &request.settings, &on_progress, &mut result, |file| {
-                    let out_pdf = fileuc_convert::output::resolve_suffixed_output_path(file, "_locked", "pdf", None);
-                    fileuc_convert::pdf::lock_pdf(file, "fileuc", &out_pdf)?;
-                    Ok(out_pdf)
+                process_each_file(&request.files, &request.settings, &on_progress, &mut result, |_file| {
+                    Err(ConvertError::ConverterError(
+                        "LockPdf requires interactive user password specification".to_string(),
+                    ))
                 });
             }
             ConversionAction::UnlockPdf => {
@@ -244,7 +243,9 @@ pub fn dispatch(
                     let out_pdf = fileuc_convert::output::resolve_suffixed_output_path(file, "_unlocked", "pdf", Some("_locked"));
                     match fileuc_convert::pdf::unlock_pdf(file, None, &out_pdf)? {
                         true => Ok(out_pdf),
-                        false => Err(ConvertError::ConverterError("Password required to unlock".to_string())),
+                        false => Err(ConvertError::ConverterError(
+                            "This document is highly secured and cannot be unlocked without a valid password.".to_string(),
+                        )),
                     }
                 });
             }
@@ -324,52 +325,78 @@ pub fn dispatch(
                     }
                 });
             }
-            ConversionAction::Ocr => {
-                let mut combined_text = String::new();
-                for (i, file) in request.files.iter().enumerate() {
-                    on_progress(i as f32 / total);
-                    let out_txt = fileuc_convert::output::resolve_output_path(file, "txt");
-                    let ext = file.extension().and_then(|s| s.to_str()).unwrap_or("").to_lowercase();
-                    let res = if ext == "pdf" {
-                        match fileuc_convert::pdf::extract_pdf_paragraphs(file) {
-                            Ok(paras) => {
-                                let mut text = paras.join("\r\n\r\n");
-                                if text.starts_with("Document: ") && text.lines().count() <= 1 {
-                                    if let Ok(rendered_img) = fileuc_convert::pdfium::render_page_to_image(file, 0, 2048) {
-                                        let rgba = rendered_img.to_rgba8();
-                                        if let Ok(ocr_text) = fileuc_convert::ocr::ocr_rgba_bytes(rendered_img.width(), rendered_img.height(), &rgba) {
-                                            if !ocr_text.trim().is_empty() {
-                                                text = ocr_text;
-                                            }
-                                        }
-                                    }
-                                }
-                                let _ = std::fs::write(&out_txt, &text);
-                                Ok(text)
-                            }
-                            Err(e) => Err(e),
-                        }
-                    } else {
-                        fileuc_convert::ocr::image_to_text(file, &out_txt)
-                    };
-
-                    match res {
-                        Ok(text) => {
-                            if !combined_text.is_empty() {
-                                combined_text.push_str("\r\n\r\n");
-                            }
-                            combined_text.push_str(&text);
-                            let final_out = apply_output_mode(out_txt, &request.settings.output_mode);
-                            result.outputs.push(final_out);
-                        }
-                        Err(e) => result.errors.push((file.clone(), e)),
+            ConversionAction::XlsxToCsv => {
+                process_with_resolved_output(&request.files, "csv", &request.settings, &on_progress, &mut result, |src, dst| {
+                    fileuc_convert::data::xlsx_to_csv(src, dst)
+                });
+            }
+            ConversionAction::XlsxToJson => {
+                process_with_resolved_output(&request.files, "json", &request.settings, &on_progress, &mut result, |src, dst| {
+                    fileuc_convert::data::xlsx_to_json(src, dst)
+                });
+            }
+            ConversionAction::CsvToXlsx => {
+                process_with_resolved_output(&request.files, "xlsx", &request.settings, &on_progress, &mut result, |src, dst| {
+                    fileuc_convert::data::csv_to_xlsx(src, dst)
+                });
+            }
+            ConversionAction::CsvToJson => {
+                process_with_resolved_output(&request.files, "json", &request.settings, &on_progress, &mut result, |src, dst| {
+                    fileuc_convert::data::csv_to_json(src, dst)
+                });
+            }
+            ConversionAction::JsonToXlsx => {
+                process_with_resolved_output(&request.files, "xlsx", &request.settings, &on_progress, &mut result, |src, dst| {
+                    fileuc_convert::data::json_to_xlsx(src, dst)
+                });
+            }
+            ConversionAction::JsonToCsv => {
+                process_with_resolved_output(&request.files, "csv", &request.settings, &on_progress, &mut result, |src, dst| {
+                    fileuc_convert::data::json_to_csv(src, dst)
+                });
+            }
+            ConversionAction::MdToTxt => {
+                process_with_resolved_output(&request.files, "txt", &request.settings, &on_progress, &mut result, |src, dst| {
+                    fileuc_convert::text::markdown_to_text(src, dst)
+                });
+            }
+            ConversionAction::TxtToMd => {
+                process_with_resolved_output(&request.files, "md", &request.settings, &on_progress, &mut result, |src, dst| {
+                    fileuc_convert::text::text_to_markdown(src, dst)
+                });
+            }
+            ConversionAction::StripMetadata => {
+                process_each_file(&request.files, &request.settings, &on_progress, &mut result, |file| {
+                    fileuc_convert::metadata_strip::strip_metadata(file, None)
+                });
+            }
+            ConversionAction::ToMp3
+            | ConversionAction::ToWav
+            | ConversionAction::ToOgg
+            | ConversionAction::ToAac
+            | ConversionAction::ToFlac => {
+                let target_ext = match request.action {
+                    ConversionAction::ToMp3 => "mp3",
+                    ConversionAction::ToWav => "wav",
+                    ConversionAction::ToOgg => "ogg",
+                    ConversionAction::ToAac => "aac",
+                    ConversionAction::ToFlac => "flac",
+                    _ => "mp3",
+                };
+                if let Some(ffmpeg) = fileuc_convert::media::find_ffmpeg() {
+                    process_with_resolved_output(&request.files, target_ext, &request.settings, &on_progress, &mut result, |src, dst| {
+                        fileuc_convert::media::convert_audio(&ffmpeg, src, dst, target_ext)
+                    });
+                } else {
+                    for f in &request.files {
+                        result.errors.push((f.clone(), ConvertError::EngineMissing("FFmpeg is required for audio conversions".to_string())));
                     }
-                    on_progress((i + 1) as f32 / total);
                 }
-
-                if !combined_text.is_empty() {
-                    copy_to_clipboard(&combined_text);
-                }
+            }
+            ConversionAction::OfficeGroup => {
+                process_with_resolved_output(&request.files, "docx", &request.settings, &on_progress, &mut result, |src, dst| {
+                    fileuc_convert::doc::pdf_to_docx(src, dst)
+                });
             }
             _ => {}
         }
@@ -412,33 +439,25 @@ fn process_with_resolved_output<F>(
     F: FnMut(&Path, &Path) -> Result<(), ConvertError>,
 {
     process_each_file(files, settings, on_progress, result, |file| {
-        let out_path = fileuc_convert::output::resolve_output_path(file, ext);
-        convert_fn(file, &out_path)?;
-        Ok(out_path)
-    });
-}
-
-fn copy_to_clipboard(text: &str) {
-    #[cfg(windows)]
-    unsafe {
-        use windows::Win32::System::DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData};
-        use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GHND};
-        if OpenClipboard(None).is_ok() {
-            let _ = EmptyClipboard();
-            let utf16: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
-            let bytes_len = utf16.len() * std::mem::size_of::<u16>();
-            if let Ok(handle) = GlobalAlloc(GHND, bytes_len) {
-                let ptr = GlobalLock(handle);
-                if !ptr.is_null() {
-                    std::ptr::copy_nonoverlapping(utf16.as_ptr() as *const u8, ptr as *mut u8, bytes_len);
-                    let _ = GlobalUnlock(handle);
-                    // CF_UNICODETEXT = 13
-                    let _ = SetClipboardData(13, windows::Win32::Foundation::HANDLE(handle.0));
-                }
+        let out_path = match &settings.output_mode {
+            OutputMode::NextToOriginal => fileuc_convert::output::resolve_output_path(file, ext),
+            OutputMode::CustomFolder(folder) => {
+                let _ = std::fs::create_dir_all(folder);
+                let stem = file.file_stem().unwrap_or_default();
+                let initial_name = format!("{}.{}", stem.to_string_lossy(), ext);
+                resolve_target_path(folder, std::ffi::OsStr::new(&initial_name))
             }
-            let _ = CloseClipboard();
+        };
+        match convert_fn(file, &out_path) {
+            Ok(_) => Ok(out_path),
+            Err(e) => {
+                if out_path.exists() {
+                    let _ = std::fs::remove_file(&out_path);
+                }
+                Err(e)
+            }
         }
-    }
+    });
 }
 
 pub fn apply_output_mode(path: PathBuf, mode: &OutputMode) -> PathBuf {
@@ -505,4 +524,33 @@ fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
         }
     }
     Ok(())
+}
+
+pub fn dispatch_reduce_size(
+    files: Vec<PathBuf>,
+    settings: Arc<AppSettings>,
+    target_bytes: u64,
+    progress_val: Arc<std::sync::atomic::AtomicU32>,
+) -> JoinHandle<ConversionResult> {
+    std::thread::spawn(move || {
+        progress_val.store(200, std::sync::atomic::Ordering::Relaxed);
+        let mut outputs = Vec::new();
+        let mut errors = Vec::new();
+        let total = files.len();
+        for (idx, src_file) in files.into_iter().enumerate() {
+            match fileuc_convert::size_reducer::reduce_size(&src_file, None, target_bytes) {
+                Ok(out_path) => {
+                    let final_out = apply_output_mode(out_path, &settings.output_mode);
+                    outputs.push(final_out);
+                }
+                Err(e) => {
+                    errors.push((src_file, e));
+                }
+            }
+            let progress = ((idx + 1) as f32 / total as f32) * 800.0 + 200.0;
+            progress_val.store(progress as u32, std::sync::atomic::Ordering::Relaxed);
+        }
+        progress_val.store(1000, std::sync::atomic::Ordering::Relaxed);
+        ConversionResult { outputs, errors }
+    })
 }

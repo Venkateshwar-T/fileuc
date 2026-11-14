@@ -8,7 +8,9 @@ fn defaults_when_no_file() {
     assert_eq!(s.trigger_modifier, "Ctrl");
     assert!(matches!(s.output_mode, OutputMode::NextToOriginal));
     assert!(matches!(s.theme, ThemeChoice::System));
-    assert!(!s.auto_start);
+    assert!(s.auto_start);
+    assert!(s.show_tray_icon);
+    assert!(s.service_enabled);
 }
 
 #[test]
@@ -18,13 +20,17 @@ fn roundtrip_persistence() {
     let store = SettingsStore::new(path.clone());
     let mut s = store.load();
     s.trigger_modifier = "Alt".into();
-    s.auto_start = true;
+    s.auto_start = false;
+    s.show_tray_icon = false;
+    s.service_enabled = false;
     store.save(&s).unwrap();
 
     let store2 = SettingsStore::new(path);
     let loaded = store2.load();
     assert_eq!(loaded.trigger_modifier, "Alt");
-    assert!(loaded.auto_start);
+    assert!(!loaded.auto_start);
+    assert!(!loaded.show_tray_icon);
+    assert!(!loaded.service_enabled);
 }
 
 #[test]

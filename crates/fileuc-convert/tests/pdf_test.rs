@@ -1,4 +1,5 @@
 use fileuc_convert::pdf::images_to_pdf;
+use std::io::Write;
 
 #[test]
 fn images_to_pdf_creates_valid_pdf() {
@@ -12,61 +13,19 @@ fn images_to_pdf_creates_valid_pdf() {
 }
 
 #[test]
-fn pdf_to_docx_creates_valid_docx_zip() {
-    use std::io::Read;
-    let tmp = tempfile::tempdir().unwrap();
-    let img = tmp.path().join("page.png");
-    image::RgbaImage::new(100, 100).save(&img).unwrap();
-    let pdf_path = tmp.path().join("source.pdf");
-    images_to_pdf(&[img], &pdf_path).unwrap();
-
-    let docx_path = tmp.path().join("out.docx");
-    fileuc_convert::pdf::pdf_to_docx(&pdf_path, &docx_path).unwrap();
-    assert!(docx_path.exists());
-
-    // Verify it's a valid zip containing all necessary parts and embedded image
-    let file = std::fs::File::open(&docx_path).unwrap();
-    let mut zip = zip::ZipArchive::new(file).unwrap();
-    assert!(zip.by_name("word/document.xml").is_ok());
-    assert!(zip.by_name("[Content_Types].xml").is_ok());
-    assert!(zip.by_name("word/styles.xml").is_ok());
-    assert!(zip.by_name("word/_rels/document.xml.rels").is_ok());
-    assert!(zip.by_name("word/media/image1.png").is_ok());
-
-    let mut doc_file = zip.by_name("word/document.xml").unwrap();
-    let mut doc_xml = String::new();
-    doc_file.read_to_string(&mut doc_xml).unwrap();
-    assert!(doc_xml.contains("<w:drawing>"));
-    assert!(doc_xml.contains("<wp:inline"));
-    assert!(doc_xml.contains("r:embed=\"rId2\""));
-}
-
-#[test]
-fn pdf_to_doc_creates_valid_doc_rtf() {
-    let tmp = tempfile::tempdir().unwrap();
-    let img = tmp.path().join("page.png");
-    image::RgbaImage::new(50, 50).save(&img).unwrap();
-    let pdf_path = tmp.path().join("source.pdf");
-    images_to_pdf(&[img], &pdf_path).unwrap();
-
-    let doc_path = tmp.path().join("out.doc");
-    fileuc_convert::pdf::pdf_to_doc(&pdf_path, &doc_path).unwrap();
-    assert!(doc_path.exists());
-
-    let content = std::fs::read_to_string(&doc_path).unwrap();
-    assert!(content.starts_with(r"{\rtf1"));
-}
-
-#[test]
 fn docx_to_pdf_creates_valid_pdf() {
     let tmp = tempfile::tempdir().unwrap();
-    let img = tmp.path().join("page.png");
-    image::RgbaImage::new(50, 50).save(&img).unwrap();
-    let pdf_source = tmp.path().join("source.pdf");
-    images_to_pdf(&[img], &pdf_source).unwrap();
-
     let docx_path = tmp.path().join("sample.docx");
-    fileuc_convert::pdf::pdf_to_docx(&pdf_source, &docx_path).unwrap();
+
+    // Create a synthetic DOCX file
+    let file = std::fs::File::create(&docx_path).unwrap();
+    let mut zip = zip::ZipWriter::new(file);
+    let options = zip::write::SimpleFileOptions::default();
+    zip.start_file("word/document.xml", options).unwrap();
+    zip.write_all(
+        br#"<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Hello World from DOCX</w:t></w:r></w:p></w:body></w:document>"#,
+    ).unwrap();
+    zip.finish().unwrap();
 
     let pdf_out = tmp.path().join("converted.pdf");
     fileuc_convert::doc::doc_to_pdf(&docx_path, &pdf_out).unwrap();
@@ -77,48 +36,20 @@ fn docx_to_pdf_creates_valid_pdf() {
 }
 
 #[test]
-fn test_pdf_to_docx_preserves_layout_boxes_and_indic() {
-    use std::io::Read;
-    let pdf_path = std::path::Path::new(r"C:\Users\Sharad Chand\Downloads\StudentbuspassApplication.pdf");
-    if !pdf_path.exists() {
-        return;
-    }
-
+fn test_pdf_to_docx_conversion() {
     let tmp = tempfile::tempdir().unwrap();
-    let docx_out = tmp.path().join("application.docx");
+    let img = tmp.path().join("page.png");
+    image::RgbaImage::new(100, 100).save(&img).unwrap();
+    let pdf_path = tmp.path().join("source.pdf");
+    images_to_pdf(&[img], &pdf_path).unwrap();
 
-    let layout_res = fileuc_convert::pdfium::extract_structured_layout(pdf_path);
-    match &layout_res {
-        Ok(layouts) => {
-            println!("extract_structured_layout returned {} pages", layouts.len());
-            for l in layouts {
-                println!("Page {} has {} items", l.page_number, l.items.len());
-            }
-        }
-        Err(e) => {
-            println!("extract_structured_layout failed: {:?}", e);
-        }
+    let docx_out = tmp.path().join("output.docx");
+    let res = fileuc_convert::doc::pdf_to_docx(&pdf_path, &docx_out);
+    if fileuc_convert::doc::find_pdf2docx().is_some() {
+        assert!(res.is_ok(), "Conversion should succeed when pdf2docx engine is found: {:?}", res);
+        assert!(docx_out.exists(), "Output docx should exist");
+        assert!(std::fs::metadata(&docx_out).unwrap().len() > 0, "Output docx should not be empty");
     }
-
-    fileuc_convert::pdf::pdf_to_docx(pdf_path, &docx_out).expect("pdf_to_docx failed");
-    assert!(docx_out.exists());
-
-    // Inspect document.xml inside docx
-    let file = std::fs::File::open(&docx_out).unwrap();
-    let mut zip = zip::ZipArchive::new(file).unwrap();
-    let mut doc_file = zip.by_name("word/document.xml").expect("document.xml missing");
-    let mut doc_xml = String::new();
-    doc_file.read_to_string(&mut doc_xml).unwrap();
-
-    println!("doc_xml length: {}", doc_xml.len());
-
-    // Verify layout features
-    assert!(doc_xml.contains("<w:tabs>"), "Must preserve tab stops for columnar alignment");
-    assert!(doc_xml.contains("<w:tab"), "Must contain tab elements");
-    assert!(doc_xml.contains("BANGALORE METROPOLITAN TRANSPORT CORPORATION"), "Must contain header");
-    assert!(doc_xml.contains("ಬೆಂಗಳೂರು ಮಹಾನಗರ ಸಾರಿಗೆ ಸಂಸ್ಥೆ"), "Must contain properly transliterated Kannada");
-    assert!(doc_xml.contains("<w:pgBdr"), "Must contain outer border");
-    println!("Verified PDF to DOCX: layout, tabs, alignment, outer borders, and Kannada are 100% preserved!");
 }
 
 #[test]
@@ -157,6 +88,32 @@ fn test_lock_and_unlock_pdf() {
 }
 
 #[test]
+fn test_owner_locked_pdf_unlocks_silently() {
+    let tmp = tempfile::tempdir().unwrap();
+    let img = tmp.path().join("page.png");
+    image::RgbaImage::new(50, 50).save(&img).unwrap();
+    let pdf_path = tmp.path().join("doc.pdf");
+    images_to_pdf(&[img], &pdf_path).unwrap();
+
+    // Lock with empty user password ("") and owner password -> owner/permission lock
+    let locked_path = tmp.path().join("owner_locked.pdf");
+    fileuc_convert::pdf::lock_pdf_with_owner(&pdf_path, "", "MyOwnerPassword", &locked_path).unwrap();
+    assert!(locked_path.exists());
+
+    let doc = lopdf::Document::load(&locked_path).unwrap();
+    assert!(doc.is_encrypted());
+
+    // Calling unlock_pdf with None should silently unlock it (matching iLovePDF)
+    let unlocked_path = tmp.path().join("silent_unlocked.pdf");
+    let res = fileuc_convert::pdf::unlock_pdf(&locked_path, None, &unlocked_path).unwrap();
+    assert!(res, "Should return true indicating successful silent unlock");
+    assert!(unlocked_path.exists());
+
+    let unencrypted_doc = lopdf::Document::load(&unlocked_path).unwrap();
+    assert!(!unencrypted_doc.is_encrypted(), "Trailer should have /Encrypt stripped");
+}
+
+#[test]
 fn test_compress_pdf() {
     let tmp = tempfile::tempdir().unwrap();
     let img = tmp.path().join("page.png");
@@ -170,4 +127,32 @@ fn test_compress_pdf() {
 
     let bytes = std::fs::read(&compressed_path).unwrap();
     assert_eq!(&bytes[0..5], b"%PDF-");
+}
+
+#[test]
+fn test_merge_pdfs_blocks_password_protected_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let img = tmp.path().join("page.png");
+    image::RgbaImage::new(100, 100).save(&img).unwrap();
+
+    let pdf1 = tmp.path().join("normal.pdf");
+    images_to_pdf(&[img.clone()], &pdf1).unwrap();
+
+    let pdf2_plain = tmp.path().join("plain2.pdf");
+    images_to_pdf(&[img], &pdf2_plain).unwrap();
+
+    let pdf2_locked = tmp.path().join("locked.pdf");
+    fileuc_convert::pdf::lock_pdf(&pdf2_plain, "SecretKey123", &pdf2_locked).unwrap();
+
+    let merged_out = tmp.path().join("merged.pdf");
+    let res = fileuc_convert::pdf::merge_pdfs(&[pdf1, pdf2_locked], &merged_out);
+
+    assert!(res.is_err(), "Merging with a password-protected PDF must fail");
+    let err_msg = res.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("Cannot merge") && err_msg.contains("is password-protected"),
+        "Error message must clearly state the file is password-protected: {}",
+        err_msg
+    );
+    assert!(!merged_out.exists(), "No corrupted PDF output should be generated");
 }

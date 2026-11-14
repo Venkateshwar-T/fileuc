@@ -28,12 +28,18 @@ pub struct ShareServerHandle {
     pub token: String,
     pub rx: Receiver<ShareServerEvent>,
     shutdown: Arc<AtomicBool>,
+    client_streams: Arc<std::sync::Mutex<Vec<TcpStream>>>,
     thread: Option<JoinHandle<()>>,
 }
 
 impl ShareServerHandle {
     pub fn stop(&mut self) {
         self.shutdown.store(true, Ordering::SeqCst);
+        if let Ok(streams) = self.client_streams.lock() {
+            for stream in streams.iter() {
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+            }
+        }
         if let Some(t) = self.thread.take() {
             let _ = t.join();
         }
@@ -121,8 +127,12 @@ pub fn start_share_server(files: &[PathBuf]) -> Result<ShareServerHandle, String
     let token_clone = token.clone();
     let display_name_clone = display_name.clone();
 
+    let shared_temp = Arc::new(temp_guard);
+    let client_streams = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let client_streams_clone = client_streams.clone();
+
     let thread = thread::spawn(move || {
-        let _keep_temp = temp_guard;
+        let keep_temp = shared_temp;
         let start_time = Instant::now();
         let timeout = Duration::from_secs(300); // 5-minute inactivity session expiry
         let download_completed = Arc::new(AtomicBool::new(false));
@@ -134,12 +144,19 @@ pub fn start_share_server(files: &[PathBuf]) -> Result<ShareServerHandle, String
 
             match listener.accept() {
                 Ok((mut stream, _)) => {
+                    if let Ok(cloned_sock) = stream.try_clone() {
+                        if let Ok(mut lock) = client_streams_clone.lock() {
+                            lock.push(cloned_sock);
+                        }
+                    }
                     let target = target_path.clone();
                     let name = display_name_clone.clone();
                     let tok = token_clone.clone();
                     let tx_sub = tx.clone();
                     let completed = download_completed.clone();
+                    let temp_holder = keep_temp.clone();
                     thread::spawn(move || {
+                        let _keep_alive = temp_holder;
                         handle_client(
                             &mut stream,
                             &target,
@@ -171,6 +188,7 @@ pub fn start_share_server(files: &[PathBuf]) -> Result<ShareServerHandle, String
         token,
         rx,
         shutdown,
+        client_streams,
         thread: Some(thread),
     })
 }

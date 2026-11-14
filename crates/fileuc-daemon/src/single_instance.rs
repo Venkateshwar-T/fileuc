@@ -31,8 +31,13 @@ pub fn acquire(name: &str) -> Result<SingleInstanceGuard, InstanceError> {
     let wide_name = HSTRING::from(name);
     unsafe {
         SetLastError(WIN32_ERROR(0));
-        let handle = CreateMutexW(None, true, PCWSTR::from_raw(wide_name.as_ptr()))
-            .map_err(InstanceError::WindowsError)?;
+        let handle = match CreateMutexW(None, true, PCWSTR::from_raw(wide_name.as_ptr())) {
+            Ok(h) => h,
+            Err(e) if e.code() == windows::Win32::Foundation::ERROR_ACCESS_DENIED.to_hresult() => {
+                return Err(InstanceError::AlreadyRunning);
+            }
+            Err(e) => return Err(InstanceError::WindowsError(e)),
+        };
 
         if GetLastError() == ERROR_ALREADY_EXISTS {
             let _ = CloseHandle(handle);

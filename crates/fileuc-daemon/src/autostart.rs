@@ -18,6 +18,14 @@ pub fn set_auto_start(enabled: bool) -> Result<(), AutoStartError> {
     let subkey = HSTRING::from(RUN_SUBKEY);
     let app_name = HSTRING::from(APP_NAME);
 
+    let wide_exe = if enabled {
+        let current_exe = env::current_exe().map_err(|_| AutoStartError::CurrentExeUnavailable)?;
+        let exe_path_str = format!("\"{}\" --autostart", current_exe.to_string_lossy());
+        Some(HSTRING::from(exe_path_str.as_str()))
+    } else {
+        None
+    };
+
     unsafe {
         let mut key = Default::default();
         RegOpenKeyExW(
@@ -30,11 +38,7 @@ pub fn set_auto_start(enabled: bool) -> Result<(), AutoStartError> {
         .ok()
         .map_err(AutoStartError::WindowsError)?;
 
-        let err = if enabled {
-            let current_exe = env::current_exe().map_err(|_| AutoStartError::CurrentExeUnavailable)?;
-            let exe_path_str = format!("\"{}\" --autostart", current_exe.to_string_lossy());
-            let wide_exe = HSTRING::from(exe_path_str.as_str());
-
+        let err = if let Some(ref wide_exe) = wide_exe {
             RegSetValueExW(
                 key,
                 PCWSTR::from_raw(app_name.as_ptr()),

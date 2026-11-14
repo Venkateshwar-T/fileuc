@@ -1,39 +1,154 @@
 use fileuc_types::ConvertError;
 use pdf_writer::{Content, Finish, Name, Pdf, Rect, Ref, Str};
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-pub fn doc_to_pdf(src: &Path, output: &Path) -> Result<(), ConvertError> {
-    if !src.exists() {
-        return Err(ConvertError::SourceNotFound(src.to_string_lossy().to_string()));
+pub fn find_pdf2docx() -> Option<PathBuf> {
+    // 1. Check %LOCALAPPDATA%\FileUC\plugins\pdf2docx\Scripts\python.exe
+    if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+        let p = PathBuf::from(local_app_data)
+            .join("FileUC")
+            .join("plugins")
+            .join("pdf2docx")
+            .join("Scripts")
+            .join("python.exe");
+        if p.exists() {
+            return Some(p);
+        }
     }
 
-    // Try Word COM first if available on Windows
-    if try_word_com_convert(src, output).is_ok() && output.exists() {
-        if let Ok(meta) = std::fs::metadata(output) {
-            if meta.len() > 0 {
-                return Ok(());
+    // 2. Check next to executable: <exe_dir>\plugins\pdf2docx\Scripts\python.exe
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            let next_to_exe = parent
+                .join("plugins")
+                .join("pdf2docx")
+                .join("Scripts")
+                .join("python.exe");
+            if next_to_exe.exists() {
+                return Some(next_to_exe);
+            }
+            let engines_p = parent
+                .join("engines")
+                .join("pdf2docx")
+                .join("python.exe");
+            if engines_p.exists() {
+                return Some(engines_p);
             }
         }
     }
 
-    // Pure Rust fallback: extract text and render via pdf-writer
-    let paragraphs = extract_doc_paragraphs(src)?;
-    render_text_to_pdf(&paragraphs, output)
+    // 3. Check system / uv python environment if pdf2docx is installed on disk
+    if let Ok(user_profile) = std::env::var("USERPROFILE") {
+        let uv_dir = PathBuf::from(&user_profile)
+            .join("AppData")
+            .join("Roaming")
+            .join("uv")
+            .join("python")
+            .join("cpython-3.13-windows-x86_64-none");
+        let uv_python = uv_dir.join("python.exe");
+        let site_pkg = uv_dir.join("Lib").join("site-packages").join("pdf2docx");
+        if uv_python.exists() && site_pkg.exists() {
+            return Some(uv_python);
+        }
+    }
+
+    None
 }
 
-fn try_word_com_convert(src: &Path, output: &Path) -> Result<(), ConvertError> {
-    let abs_src = crate::pptx::clean_windows_path(src);
-    let abs_dst = crate::pptx::clean_windows_path(output);
+pub fn pdf_to_docx(src: &Path, output: &Path) -> Result<(), ConvertError> {
+    if !src.exists() {
+        return Err(ConvertError::SourceNotFound(src.to_string_lossy().to_string()));
+    }
+    let guard = crate::output_guard::OutputGuard::new(output);
 
-    let script = format!(
-        "$word = New-Object -ComObject Word.Application; $word.Visible = $false; $word.DisplayAlerts = 0; try {{ $doc = $word.Documents.Open('{}', $false, $true); if ($doc -ne $null) {{ $doc.SaveAs([ref]'{}', [ref]17); $doc.Close([ref]0); [System.Runtime.InteropServices.Marshal]::ReleaseComObject($doc) | Out-Null; }} }} finally {{ $word.Quit(); [System.Runtime.InteropServices.Marshal]::ReleaseComObject($word) | Out-Null; [System.GC]::Collect(); [System.GC]::WaitForPendingFinalizers(); }}",
-        abs_src.replace('\'', "''"),
-        abs_dst.replace('\'', "''")
-    );
+    // 1. Try pdf2docx plugin engine
+    if let Some(python_exe) = find_pdf2docx() {
+        if run_pdf2docx_converter(&python_exe, src, output).is_ok() && output.exists() {
+            if let Ok(meta) = std::fs::metadata(output) {
+                if meta.len() > 0 {
+                    guard.disarm();
+                    return Ok(());
+                }
+            }
+        }
+        return Err(ConvertError::ConverterError(
+            "PDF to Word conversion failed.".to_string(),
+        ));
+    }
 
-    let mut cmd = std::process::Command::new("powershell.exe");
-    cmd.args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", &script]);
+    Err(ConvertError::EngineMissing(
+        "PDF to Word engine is not installed. Please open FileUC Settings -> Plugins to install it.".to_string(),
+    ))
+}
+
+fn run_pdf2docx_converter(python_exe: &Path, src: &Path, output: &Path) -> Result<(), ConvertError> {
+    let mut cmd = std::process::Command::new(python_exe);
+    let script = r#"
+import sys
+import os
+from pdf2docx import Converter
+import docx
+
+src = sys.argv[1]
+dst = sys.argv[2]
+
+try:
+    cv = Converter(src)
+    cv.convert(dst)
+    cv.close()
+except Exception as e:
+    sys.stderr.write(f"pdf2docx conversion error: {e}\n")
+    sys.exit(1)
+
+# Post-processing: Correct Z-ordering without deleting any element.
+# Background drawings (cover templates, header designs, borders) remain intact at behindDoc="1" & relativeHeight="0".
+# Real content images (photos, certificates, diagrams) are elevated to behindDoc="0" and higher relativeHeight
+# so Word renders them in front of the background vector sheet instead of masking them beneath it.
+try:
+    if os.path.exists(dst):
+        doc = docx.Document(dst)
+        modified = False
+
+        content_idx = 0
+        for d in doc._element.xpath('.//w:drawing'):
+            for a in d.xpath('./wp:anchor'):
+                extent = a.xpath('./wp:extent')
+                if extent:
+                    cx = int(extent[0].get('cx', '0'))
+                    cy = int(extent[0].get('cy', '0'))
+                    # Full-page vector backgrounds span >5.0 x >7.8 inches (>4,500,000 x >7,100,000 EMUs)
+                    # in either portrait or landscape orientation
+                    is_full_page = (cx > 4_500_000 and cy > 7_100_000) or (cx > 7_100_000 and cy > 4_500_000)
+                    if is_full_page:
+                        a.set('behindDoc', '1')
+                        a.set('relativeHeight', '0')
+                        modified = True
+                    else:
+                        content_idx += 1
+                        a.set('behindDoc', '0')
+                        a.set('relativeHeight', str(1000 + content_idx))
+                        modified = True
+
+        # Remove dummy blank white thumbnail bundled by python-docx's default template
+        # so Windows Explorer displays the standard Word icon (Big 'W' with lines)
+        pkg = doc.part.package
+        thumb_rids = [rid for rid, rel in pkg.rels.items() if 'thumbnail' in rel.reltype.lower()]
+        for rid in thumb_rids:
+            del pkg.rels[rid]
+            modified = True
+
+        if modified:
+            doc.save(dst)
+except Exception as e:
+    sys.stderr.write(f"Warning: post-process error: {e}\n")
+
+# Explicit clean exit to immediately release all OS handles and memory
+sys.exit(0)
+"#;
+    cmd.args(["-c", script]);
+    cmd.arg(src);
+    cmd.arg(output);
     cmd.stdout(std::process::Stdio::null());
     cmd.stderr(std::process::Stdio::null());
 
@@ -44,7 +159,130 @@ fn try_word_com_convert(src: &Path, output: &Path) -> Result<(), ConvertError> {
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
 
-    let status = cmd.status().map_err(|e| ConvertError::ConverterError(e.to_string()))?;
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| ConvertError::ConverterError(format!("Failed to execute python: {}", e)))?;
+
+    // Wait for the converter to finish with a safety timeout (180 seconds).
+    // If the process exceeds the timeout, forcefully kill it to guarantee 100% memory reclamation.
+    let start = std::time::Instant::now();
+    let timeout = std::time::Duration::from_secs(180);
+    let mut finished = false;
+    let mut exit_status = None;
+
+    while start.elapsed() < timeout {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                finished = true;
+                exit_status = Some(status);
+                break;
+            }
+            Ok(None) => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(e) => {
+                let _ = child.kill();
+                return Err(ConvertError::ConverterError(format!("Error waiting on python process: {}", e)));
+            }
+        }
+    }
+
+    if !finished {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(ConvertError::ConverterError("pdf2docx conversion timed out after 180 seconds".to_string()));
+    }
+
+    let status = exit_status.ok_or_else(|| {
+        ConvertError::ConverterError("pdf2docx process exited without status".to_string())
+    })?;
+    if status.success() && output.exists() {
+        Ok(())
+    } else {
+        Err(ConvertError::ConverterError(
+            "pdf2docx conversion exited with an error".to_string(),
+        ))
+    }
+}
+
+pub fn doc_to_pdf(src: &Path, output: &Path) -> Result<(), ConvertError> {
+    if !src.exists() {
+        return Err(ConvertError::SourceNotFound(src.to_string_lossy().to_string()));
+    }
+    let guard = crate::output_guard::OutputGuard::new(output);
+
+    // Try Word COM first if available on Windows
+    if try_word_com_convert(src, output).is_ok() && output.exists() {
+        if let Ok(meta) = std::fs::metadata(output) {
+            if meta.len() > 0 {
+                guard.disarm();
+                return Ok(());
+            }
+        }
+    }
+
+    // Pure Rust fallback: extract text and render via pdf-writer
+    let paragraphs = extract_doc_paragraphs(src)?;
+    render_text_to_pdf(&paragraphs, output)?;
+    guard.disarm();
+    Ok(())
+}
+
+fn try_word_com_convert(src: &Path, output: &Path) -> Result<(), ConvertError> {
+    let abs_src = crate::output::clean_windows_path(src);
+    let abs_dst = crate::output::clean_windows_path(output);
+
+    let script = format!(
+        "$word = New-Object -ComObject Word.Application; $word.Visible = $false; $word.DisplayAlerts = 0; try {{ $doc = $word.Documents.Open('{}', $false, $true); if ($doc -ne $null) {{ $doc.SaveAs([ref]'{}', [ref]17); $doc.Close([ref]0); [System.Runtime.InteropServices.Marshal]::ReleaseComObject($doc) | Out-Null; }} }} finally {{ $word.Quit(); [System.Runtime.InteropServices.Marshal]::ReleaseComObject($word) | Out-Null; [System.GC]::Collect(); [System.GC]::WaitForPendingFinalizers(); }}",
+        abs_src.replace('\'', "''"),
+        abs_dst.replace('\'', "''")
+    );
+
+    let mut cmd = std::process::Command::new("powershell.exe");
+    cmd.args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", &script]);
+    cmd.stdin(std::process::Stdio::null());
+    cmd.stdout(std::process::Stdio::null());
+    cmd.stderr(std::process::Stdio::null());
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    let mut child = cmd.spawn().map_err(|e| ConvertError::ConverterError(e.to_string()))?;
+    let start = std::time::Instant::now();
+    let timeout = std::time::Duration::from_secs(45);
+    let mut finished = false;
+    let mut exit_status = None;
+
+    while start.elapsed() < timeout {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                finished = true;
+                exit_status = Some(status);
+                break;
+            }
+            Ok(None) => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(e) => {
+                let _ = child.kill();
+                return Err(ConvertError::ConverterError(format!("Word COM error: {}", e)));
+            }
+        }
+    }
+
+    if !finished {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(ConvertError::ConverterError("Word COM conversion timed out".to_string()));
+    }
+
+    let status = exit_status.ok_or_else(|| {
+        ConvertError::ConverterError("Word COM process exited without status".to_string())
+    })?;
     if status.success() && output.exists() {
         if let Ok(meta) = std::fs::metadata(output) {
             if meta.len() > 0 {
@@ -209,34 +447,58 @@ fn render_text_to_pdf(paragraphs: &[String], output: &Path) -> Result<(), Conver
             continue;
         }
         let mut cur_line = String::new();
+        let mut cur_char_count = 0;
         for w in words {
+            let w_char_count = w.chars().count();
             if cur_line.is_empty() {
-                if w.len() > 75 {
-                    let mut start = 0;
-                    while start < w.len() {
-                        let end = (start + 75).min(w.len());
-                        wrapped_lines.push(w[start..end].to_string());
-                        start = end;
+                if w_char_count > 75 {
+                    let mut chunk = String::with_capacity(75);
+                    let mut count = 0;
+                    for ch in w.chars() {
+                        if count >= 75 {
+                            wrapped_lines.push(chunk);
+                            chunk = String::with_capacity(75);
+                            count = 0;
+                        }
+                        chunk.push(ch);
+                        count += 1;
+                    }
+                    if !chunk.is_empty() {
+                        cur_line = chunk;
+                        cur_char_count = count;
                     }
                 } else {
                     cur_line = w.to_string();
+                    cur_char_count = w_char_count;
                 }
-            } else if cur_line.len() + w.len() + 1 > 75 {
+            } else if cur_char_count + w_char_count + 1 > 75 {
                 wrapped_lines.push(cur_line);
-                if w.len() > 75 {
-                    let mut start = 0;
-                    while start < w.len() {
-                        let end = (start + 75).min(w.len());
-                        wrapped_lines.push(w[start..end].to_string());
-                        start = end;
+                cur_line = String::new();
+                cur_char_count = 0;
+                if w_char_count > 75 {
+                    let mut chunk = String::with_capacity(75);
+                    let mut count = 0;
+                    for ch in w.chars() {
+                        if count >= 75 {
+                            wrapped_lines.push(chunk);
+                            chunk = String::with_capacity(75);
+                            count = 0;
+                        }
+                        chunk.push(ch);
+                        count += 1;
                     }
-                    cur_line = String::new();
+                    if !chunk.is_empty() {
+                        cur_line = chunk;
+                        cur_char_count = count;
+                    }
                 } else {
                     cur_line = w.to_string();
+                    cur_char_count = w_char_count;
                 }
             } else {
                 cur_line.push(' ');
                 cur_line.push_str(w);
+                cur_char_count += 1 + w_char_count;
             }
         }
         if !cur_line.is_empty() {

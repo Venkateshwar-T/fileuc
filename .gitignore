@@ -1,4 +1,32 @@
+# Rust Build
 /target/
+**/*.rs.bk
+*.pdb
+
+# Compiled Binaries & Dynamic Libraries
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Node / Web UI
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+.svelte-kit/
+**/gen/schemas/
+
+# Temporary / Log files
+*.tmp
+*.log
+test_lhr_*.txt
 /Filee/
 .superpowers/
-*.pdb
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+[Dd]esktop.ini
+.vscode/
+.idea/

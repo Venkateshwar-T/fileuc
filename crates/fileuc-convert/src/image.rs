@@ -187,15 +187,35 @@ pub fn image_to_svg(src: &Path, output: &Path) -> Result<(), ConvertError> {
     };
 
     use base64::prelude::*;
-    let b64 = BASE64_STANDARD.encode(&raw_bytes);
-    let svg_content = format!(
-        r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="{}" height="{}" viewBox="0 0 {} {}">
-  <image width="{}" height="{}" xlink:href="data:{};base64,{}"/>
-</svg>"#,
-        width, height, width, height, width, height, mime, b64
-    );
+    use std::io::Write;
 
-    std::fs::write(output, svg_content.as_bytes()).map_err(|e| ConvertError::IoError(e.to_string()))?;
+    let guard = crate::output_guard::OutputGuard::new(output);
+    let out_file = std::fs::File::create(output).map_err(|e| ConvertError::IoError(e.to_string()))?;
+    let mut writer = std::io::BufWriter::new(out_file);
+
+    write!(
+        writer,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="{}" height="{}" viewBox="0 0 {} {}">
+  <image width="{}" height="{}" xlink:href="data:{};base64,"#,
+        width, height, width, height, width, height, mime
+    )
+    .map_err(|e| ConvertError::IoError(e.to_string()))?;
+
+    {
+        use base64::write::EncoderWriter;
+        let mut encoder = EncoderWriter::new(&mut writer, &BASE64_STANDARD);
+        encoder
+            .write_all(&raw_bytes)
+            .map_err(|e| ConvertError::IoError(e.to_string()))?;
+        encoder
+            .finish()
+            .map_err(|e| ConvertError::IoError(e.to_string()))?;
+    }
+
+    write!(writer, "\"/>\n</svg>").map_err(|e| ConvertError::IoError(e.to_string()))?;
+    writer.flush().map_err(|e| ConvertError::IoError(e.to_string()))?;
+
+    guard.disarm();
     Ok(())
 }
 

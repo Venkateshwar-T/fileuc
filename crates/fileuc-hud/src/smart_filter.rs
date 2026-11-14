@@ -9,9 +9,13 @@ enum FileCategory {
     Word,
     Pptx,
     Excel,
+    Csv,
+    Json,
     Markdown,
     Text,
+    Html,
     Video,
+    Audio,
     Archive,
     Other,
 }
@@ -26,12 +30,28 @@ fn categorize_extension(ext: &str) -> FileCategory {
         "pdf" => FileCategory::Pdf,
         "doc" | "docx" => FileCategory::Word,
         "ppt" | "pptx" => FileCategory::Pptx,
-        "xlsx" | "xls" | "csv" => FileCategory::Excel,
+        "xlsx" | "xls" => FileCategory::Excel,
+        "csv" => FileCategory::Csv,
+        "json" => FileCategory::Json,
         "md" | "markdown" => FileCategory::Markdown,
         "txt" => FileCategory::Text,
+        "html" | "htm" => FileCategory::Html,
         "mp4" | "mov" | "mkv" | "webm" | "avi" => FileCategory::Video,
+        "mp3" | "wav" | "ogg" | "aac" | "flac" | "m4a" | "wma" | "opus" | "aiff" => {
+            FileCategory::Audio
+        }
         "zip" | "rar" | "7z" | "tar" | "gz" | "bz2" | "xz" => FileCategory::Archive,
         _ => FileCategory::Other,
+    }
+}
+
+pub fn get_action_children(action: ConversionAction) -> Option<&'static [ConversionAction]> {
+    match action {
+        ConversionAction::OfficeGroup => Some(&[
+            ConversionAction::PdfToDocx,
+            ConversionAction::PdfToExcel,
+        ]),
+        _ => None,
     }
 }
 
@@ -66,8 +86,8 @@ pub fn filter_actions(files: &[impl AsRef<Path>], has_ffmpeg: bool) -> Vec<Conve
                     ConversionAction::ToJpg,
                     ConversionAction::ToWebp,
                     ConversionAction::ToPdf,
-                    ConversionAction::ToSvg,
-                    ConversionAction::Ocr,
+                    ConversionAction::ReduceSize,
+                    ConversionAction::StripMetadata,
                     ConversionAction::Share,
                 ];
                 let all_exts: Vec<String> = files
@@ -116,12 +136,11 @@ pub fn filter_actions(files: &[impl AsRef<Path>], has_ffmpeg: bool) -> Vec<Conve
                     }
                     actions.extend([
                         ConversionAction::MergePdf,
-                        ConversionAction::PdfToDocx,
-                        ConversionAction::PdfToPptx,
-                        ConversionAction::PdfToXlsx,
+                        ConversionAction::OfficeGroup,
+                        ConversionAction::PdfOcr,
                         ConversionAction::PdfToImages,
-                        ConversionAction::CompressPdf,
-                        ConversionAction::CreateZip,
+                        ConversionAction::ReduceSize,
+                        ConversionAction::Share,
                     ]);
                 } else {
                     if all_locked {
@@ -130,11 +149,10 @@ pub fn filter_actions(files: &[impl AsRef<Path>], has_ffmpeg: bool) -> Vec<Conve
                         actions.push(ConversionAction::LockPdf);
                     }
                     actions.extend([
-                        ConversionAction::PdfToDocx,
-                        ConversionAction::PdfToPptx,
-                        ConversionAction::PdfToXlsx,
+                        ConversionAction::OfficeGroup,
+                        ConversionAction::PdfOcr,
                         ConversionAction::PdfToImages,
-                        ConversionAction::CompressPdf,
+                        ConversionAction::ReduceSize,
                         ConversionAction::SplitPdf,
                         ConversionAction::Share,
                     ]);
@@ -143,28 +161,49 @@ pub fn filter_actions(files: &[impl AsRef<Path>], has_ffmpeg: bool) -> Vec<Conve
             }
             FileCategory::Word => vec![
                 ConversionAction::DocToPdf,
-                ConversionAction::DocxToPptx,
                 ConversionAction::CreateZip,
                 ConversionAction::Share,
             ],
             FileCategory::Pptx => vec![
                 ConversionAction::PptxToPdf,
-                ConversionAction::PptxToDocx,
                 ConversionAction::CreateZip,
                 ConversionAction::Share,
             ],
             FileCategory::Excel => vec![
                 ConversionAction::ExcelToPdf,
+                ConversionAction::XlsxToCsv,
+                ConversionAction::XlsxToJson,
+                ConversionAction::CreateZip,
+                ConversionAction::Share,
+            ],
+            FileCategory::Csv => vec![
+                ConversionAction::CsvToXlsx,
+                ConversionAction::CsvToJson,
+                ConversionAction::CreateZip,
+                ConversionAction::Share,
+            ],
+            FileCategory::Json => vec![
+                ConversionAction::JsonToXlsx,
+                ConversionAction::JsonToCsv,
                 ConversionAction::CreateZip,
                 ConversionAction::Share,
             ],
             FileCategory::Markdown => vec![
+                ConversionAction::MdToPdf,
+                ConversionAction::MdToTxt,
                 ConversionAction::ToHtml,
                 ConversionAction::CreateZip,
                 ConversionAction::Share,
             ],
             FileCategory::Text => vec![
+                ConversionAction::TxtToPdf,
+                ConversionAction::TxtToMd,
                 ConversionAction::ToHtml,
+                ConversionAction::CreateZip,
+                ConversionAction::Share,
+            ],
+            FileCategory::Html => vec![
+                ConversionAction::HtmlToPdf,
                 ConversionAction::CreateZip,
                 ConversionAction::Share,
             ],
@@ -173,9 +212,49 @@ pub fn filter_actions(files: &[impl AsRef<Path>], has_ffmpeg: bool) -> Vec<Conve
                     vec![
                         ConversionAction::VideoToGif,
                         ConversionAction::VideoToMp3,
-                        ConversionAction::CompressVideo,
+                        ConversionAction::ReduceSize,
+                        ConversionAction::StripMetadata,
                         ConversionAction::Share,
                     ]
+                } else {
+                    vec![ConversionAction::CreateZip, ConversionAction::Share]
+                }
+            }
+            FileCategory::Audio => {
+                if has_ffmpeg {
+                    let mut audio_actions = vec![
+                        ConversionAction::ToMp3,
+                        ConversionAction::ToWav,
+                        ConversionAction::ToOgg,
+                        ConversionAction::ToAac,
+                        ConversionAction::ToFlac,
+                        ConversionAction::ReduceSize,
+                        ConversionAction::StripMetadata,
+                        ConversionAction::Share,
+                    ];
+                    let all_exts: Vec<String> = files
+                        .iter()
+                        .filter_map(|f| {
+                            f.as_ref()
+                                .extension()
+                                .and_then(|s| s.to_str())
+                                .map(|s| s.to_ascii_lowercase())
+                        })
+                        .collect();
+                    if !all_exts.is_empty() {
+                        let first_ext = &all_exts[0];
+                        if all_exts.iter().all(|e| e == first_ext) {
+                            match first_ext.as_str() {
+                                "mp3" => audio_actions.retain(|&a| a != ConversionAction::ToMp3),
+                                "wav" => audio_actions.retain(|&a| a != ConversionAction::ToWav),
+                                "ogg" => audio_actions.retain(|&a| a != ConversionAction::ToOgg),
+                                "aac" => audio_actions.retain(|&a| a != ConversionAction::ToAac),
+                                "flac" => audio_actions.retain(|&a| a != ConversionAction::ToFlac),
+                                _ => {}
+                            }
+                        }
+                    }
+                    audio_actions
                 } else {
                     vec![ConversionAction::CreateZip, ConversionAction::Share]
                 }
@@ -199,6 +278,14 @@ pub fn filter_actions(files: &[impl AsRef<Path>], has_ffmpeg: bool) -> Vec<Conve
             ConversionAction::Share,
         ]
     };
+
+    if files.len() > 1 && !actions.contains(&ConversionAction::BulkRename) {
+        if let Some(pos) = actions.iter().position(|&a| a == ConversionAction::Share) {
+            actions.insert(pos, ConversionAction::BulkRename);
+        } else {
+            actions.push(ConversionAction::BulkRename);
+        }
+    }
 
     actions.truncate(8);
     actions

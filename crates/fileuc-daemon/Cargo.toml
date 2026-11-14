@@ -12,7 +12,7 @@ name = "fileuc"
 path = "src/main.rs"
 
 [dependencies]
-fileuc-types = { path = "../fileuc-types" }
+fileuc-types = { path = "../fileuc-types", features = ["serde"] }
 fileuc-hook = { path = "../fileuc-hook" }
 fileuc-hud = { path = "../fileuc-hud" }
 fileuc-convert = { path = "../fileuc-convert" }
@@ -36,9 +36,9 @@ windows = { version = "0.58", features = [
     "Win32_System_LibraryLoader",
     "Win32_System_StationsAndDesktops",
     "Win32_System_Ole",
-    "Win32_System_DataExchange",
     "Win32_System_Memory",
-    "Win32_System_Variant"
+    "Win32_System_Variant",
+    "Win32_System_DataExchange"
 ] }
 
 [dev-dependencies]

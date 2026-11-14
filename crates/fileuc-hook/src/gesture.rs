@@ -21,21 +21,20 @@ pub enum MouseButton {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GestureEvent {
-    DragStarted { origin_x: i32, origin_y: i32 },
+    DragStarted { cursor_x: i32, cursor_y: i32 },
     DragEnded,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum State {
-    Idle,
-    Armed { origin_x: i32, origin_y: i32, button: MouseButton },
-    Dragging { origin_x: i32, origin_y: i32, button: MouseButton },
 }
 
 pub struct GestureDetector {
     threshold_px: i32,
     required_modifier: Modifiers,
-    state: State,
+    pressed: bool,
+    drag_active: bool,
+    origin_x: i32,
+    origin_y: i32,
+    current_x: i32,
+    current_y: i32,
+    active_button: Option<MouseButton>,
 }
 
 impl GestureDetector {
@@ -43,8 +42,18 @@ impl GestureDetector {
         Self {
             threshold_px,
             required_modifier,
-            state: State::Idle,
+            pressed: false,
+            drag_active: false,
+            origin_x: 0,
+            origin_y: 0,
+            current_x: 0,
+            current_y: 0,
+            active_button: None,
         }
+    }
+
+    pub fn set_required_modifier(&mut self, m: Modifiers) {
+        self.required_modifier = m;
     }
 
     pub fn mouse_down(
@@ -52,47 +61,68 @@ impl GestureDetector {
         button: MouseButton,
         x: i32,
         y: i32,
-        mods: Modifiers,
+        _mods: Modifiers,
     ) -> Option<GestureEvent> {
-        if mods.contains(self.required_modifier) && button == MouseButton::Left {
-            self.state = State::Armed {
-                origin_x: x,
-                origin_y: y,
-                button,
-            };
-        } else {
-            self.state = State::Idle;
+        self.current_x = x;
+        self.current_y = y;
+        if button == MouseButton::Left {
+            self.pressed = true;
+            self.origin_x = x;
+            self.origin_y = y;
+            self.active_button = Some(button);
+            self.drag_active = false;
         }
         None
     }
 
     pub fn mouse_move(&mut self, x: i32, y: i32, mods: Modifiers) -> Option<GestureEvent> {
-        match self.state {
-            State::Idle => None,
-            State::Armed { origin_x, origin_y, button } => {
-                if !mods.contains(self.required_modifier) {
-                    self.state = State::Idle;
-                    return None;
-                }
-                let dx = (x - origin_x) as i64;
-                let dy = (y - origin_y) as i64;
+        self.current_x = x;
+        self.current_y = y;
+
+        if !self.pressed {
+            let lbutton_down = unsafe {
+                (windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState(
+                    windows::Win32::UI::Input::KeyboardAndMouse::VK_LBUTTON.0 as i32,
+                ) as u16
+                    & 0x8000)
+                    != 0
+            };
+            if lbutton_down {
+                self.pressed = true;
+                self.origin_x = x;
+                self.origin_y = y;
+                self.active_button = Some(MouseButton::Left);
+            } else {
+                return None;
+            }
+        }
+
+        if self.drag_active {
+            // If the required modifier was released while dragging, cancel the gesture.
+            if !mods.contains(self.required_modifier) {
+                self.drag_active = false;
+                self.pressed = false;
+                self.active_button = None;
+                return Some(GestureEvent::DragEnded);
+            }
+            None
+        } else {
+            // Check if user is holding required modifier and moved past threshold.
+            // Supports both starting with Ctrl held AND pressing Ctrl late during drag.
+            if mods.contains(self.required_modifier) {
+                let dx = (x - self.origin_x) as i64;
+                let dy = (y - self.origin_y) as i64;
                 let dist_sq = dx * dx + dy * dy;
                 let thresh_sq = (self.threshold_px as i64) * (self.threshold_px as i64);
 
                 if dist_sq >= thresh_sq {
-                    self.state = State::Dragging { origin_x, origin_y, button };
-                    Some(GestureEvent::DragStarted { origin_x, origin_y })
+                    self.drag_active = true;
+                    Some(GestureEvent::DragStarted { cursor_x: x, cursor_y: y })
                 } else {
                     None
                 }
-            }
-            State::Dragging { .. } => {
-                if !mods.contains(self.required_modifier) {
-                    self.state = State::Idle;
-                    Some(GestureEvent::DragEnded)
-                } else {
-                    None
-                }
+            } else {
+                None
             }
         }
     }
@@ -100,19 +130,54 @@ impl GestureDetector {
     pub fn mouse_up(
         &mut self,
         button: MouseButton,
-        _x: i32,
-        _y: i32,
+        x: i32,
+        y: i32,
         _mods: Modifiers,
     ) -> Option<GestureEvent> {
-        match self.state {
-            State::Dragging { button: active_btn, .. } if active_btn == button => {
-                self.state = State::Idle;
-                Some(GestureEvent::DragEnded)
+        self.current_x = x;
+        self.current_y = y;
+
+        let was_dragging = self.drag_active && self.active_button == Some(button);
+        if self.active_button == Some(button) || button == MouseButton::Left {
+            self.pressed = false;
+            self.drag_active = false;
+            self.active_button = None;
+        }
+
+        if was_dragging {
+            Some(GestureEvent::DragEnded)
+        } else {
+            None
+        }
+    }
+
+    pub fn key_down(&mut self, mods: Modifiers) -> Option<GestureEvent> {
+        // Late modifier press while already pressed and past threshold
+        if self.pressed && !self.drag_active && mods.contains(self.required_modifier) {
+            let dx = (self.current_x - self.origin_x) as i64;
+            let dy = (self.current_y - self.origin_y) as i64;
+            let dist_sq = dx * dx + dy * dy;
+            let thresh_sq = (self.threshold_px as i64) * (self.threshold_px as i64);
+
+            if dist_sq >= thresh_sq {
+                self.drag_active = true;
+                return Some(GestureEvent::DragStarted {
+                    cursor_x: self.current_x,
+                    cursor_y: self.current_y,
+                });
             }
-            _ => {
-                self.state = State::Idle;
-                None
-            }
+        }
+        None
+    }
+
+    pub fn key_up(&mut self, mods: Modifiers) -> Option<GestureEvent> {
+        if self.drag_active && !mods.contains(self.required_modifier) {
+            self.drag_active = false;
+            self.pressed = false;
+            self.active_button = None;
+            Some(GestureEvent::DragEnded)
+        } else {
+            None
         }
     }
 }

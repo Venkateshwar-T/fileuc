@@ -16,7 +16,6 @@ pub struct ProgressTracker {
     outcome_popped: bool,
     pending_success: bool,
     completed_at: Option<Instant>,
-    has_real_progress: bool,
 }
 
 impl ProgressTracker {
@@ -31,13 +30,11 @@ impl ProgressTracker {
             outcome_popped: false,
             pending_success: false,
             completed_at: None,
-            has_real_progress: false,
         }
     }
 
     pub fn update(&mut self, fraction: f32) {
         let f = fraction.clamp(0.0, 1.0);
-        self.has_real_progress = true;
         self.target_progress = self.target_progress.max(f);
         if matches!(self.state, ProgressState::Converting(_)) {
             self.state = ProgressState::Converting(self.target_progress);
@@ -125,7 +122,7 @@ impl ProgressTracker {
             (ProgressState::Success, Some(at)) => {
                 self.outcome_popped && at.elapsed().as_secs_f32() >= 0.9
             }
-            (ProgressState::Failure(_), Some(at)) => at.elapsed().as_secs_f32() >= 2.5,
+            (ProgressState::Failure(_), Some(at)) => at.elapsed().as_secs_f32() >= 3.5,
             _ => false,
         }
     }

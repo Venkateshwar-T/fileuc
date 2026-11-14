@@ -26,6 +26,10 @@ impl Spring {
         self.velocity = velocity;
     }
 
+    pub fn set_damping(&mut self, damping: f32) {
+        self.damping = damping;
+    }
+
     pub fn value(&self) -> f32 {
         self.value
     }

@@ -1,0 +1,63 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --color-bg: #f8fafc;
+  --color-sidebar: #f1f5f9;
+  --color-card: #ffffff;
+  --color-border: #e2e8f0;
+  --color-control: #edf2f7;
+  --color-text: #0f172a;
+  --color-muted: #64748b;
+  --color-subtext: #334155;
+  color-scheme: light;
+  font-family: 'Segoe UI Variable Text', 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+html.dark {
+  --color-bg: #111218;
+  --color-sidebar: #161822;
+  --color-card: #1c1e2a;
+  --color-border: #2b2e40;
+  --color-control: #242738;
+  --color-text: #f1f5f9;
+  --color-muted: #94a3b8;
+  --color-subtext: #cbd5e1;
+  color-scheme: dark;
+}
+
+body {
+  background-color: var(--color-bg);
+  color: var(--color-text);
+  font-family: 'Segoe UI Variable Text', 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+/* Light mode text contrast mappings */
+html.light .text-gray-100 { color: #0f172a; }
+html.light .text-gray-200 { color: #1e293b; }
+html.light .text-gray-300 { color: #334155; }
+html.light .text-gray-400 { color: #64748b; }
+html.light .text-gray-500 { color: #94a3b8; }
+html.light .hover\:text-gray-200:hover { color: #0f172a; }
+
+/* Custom sleek scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(156, 163, 175, 0.25);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(156, 163, 175, 0.45);
+}

@@ -1,7 +1,8 @@
 //! High-DPI Rounded Rectangle QR Code Sharing Card.
 //! Renders an elegant, zero-friction transition card when files are dropped on "Share (Mobile)".
-//! Displays the file name, size, pixel-perfect high-contrast QR code, live transfer status, and close controls.
+//! Supports switchable [LOCAL | INTERNET] tabs with automatic secure internet tunneling.
 
+use crate::card_common::{draw_card_body, draw_card_shadow, draw_close_button, draw_segmented_tabs, push_rounded_rect};
 use crate::font::FontContext;
 use crate::qr_encode::QrCode;
 use crate::spring::Spring;
@@ -20,8 +21,23 @@ pub enum QrShareStatus {
     Failed(String),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QrShareTab {
+    Local,
+    Internet,
+}
+
 pub struct QrCardState {
-    pub url: String,
+    pub local_url: String,
+    pub internet_url: Option<String>,
+    pub tab: QrShareTab,
+    pub hovered_tab: Option<QrShareTab>,
+    pub is_connecting_tunnel: bool,
+    pub tunnel_error: Option<String>,
+    pub is_cloudflared_installed: bool,
+    pub is_downloading: bool,
+    pub download_pct: Option<u8>,
+    pub is_download_btn_hovered: bool,
     pub file_name: String,
     pub file_size_formatted: String,
     pub status: QrShareStatus,
@@ -37,18 +53,26 @@ pub struct QrCardState {
 
 impl QrCardState {
     pub fn new(
-        url: &str,
+        local_url: &str,
         file_name: &str,
         file_size_bytes: u64,
         dpi_scale: f32,
     ) -> Result<Self, String> {
-        let qr = QrCode::encode_text(url)?;
-        // Exactly matches the donut appearing animation spring (stiffness 750.0, damping 36.0)
+        let qr = QrCode::encode_text(local_url)?;
         let mut pop_in = Spring::new(0.0, 750.0, 36.0);
         pop_in.set_target(1.0);
 
         Ok(Self {
-            url: url.to_string(),
+            local_url: local_url.to_string(),
+            internet_url: None,
+            tab: QrShareTab::Local,
+            hovered_tab: None,
+            is_connecting_tunnel: false,
+            tunnel_error: None,
+            is_cloudflared_installed: true,
+            is_downloading: false,
+            download_pct: None,
+            is_download_btn_hovered: false,
             file_name: file_name.to_string(),
             file_size_formatted: format_file_size(file_size_bytes),
             status: QrShareStatus::WaitingForScan,
@@ -59,8 +83,51 @@ impl QrCardState {
             session_start: Instant::now(),
             scanned_time: None,
             is_close_hovered: false,
-            dpi_scale,
+            dpi_scale: if dpi_scale <= 0.0 { 1.0 } else { dpi_scale },
         })
+    }
+
+    pub fn switch_tab(&mut self, tab: QrShareTab) {
+        if self.tab == tab {
+            return;
+        }
+        self.tab = tab;
+        match tab {
+            QrShareTab::Local => {
+                if let Ok(qr) = QrCode::encode_text(&self.local_url) {
+                    self.qr_matrix = qr.modules;
+                }
+            }
+            QrShareTab::Internet => {
+                if !self.is_cloudflared_installed {
+                    self.is_connecting_tunnel = false;
+                    self.tunnel_error = None;
+                } else if let Some(ref url) = self.internet_url {
+                    if let Ok(qr) = QrCode::encode_text(url) {
+                        self.qr_matrix = qr.modules;
+                    }
+                } else {
+                    self.is_connecting_tunnel = true;
+                    self.tunnel_error = None;
+                }
+            }
+        }
+    }
+
+    pub fn set_internet_url(&mut self, url: &str) {
+        self.internet_url = Some(url.to_string());
+        self.is_connecting_tunnel = false;
+        self.tunnel_error = None;
+        if self.tab == QrShareTab::Internet {
+            if let Ok(qr) = QrCode::encode_text(url) {
+                self.qr_matrix = qr.modules;
+            }
+        }
+    }
+
+    pub fn set_tunnel_error(&mut self, err: &str) {
+        self.tunnel_error = Some(err.to_string());
+        self.is_connecting_tunnel = false;
     }
 
     pub fn set_scanned(&mut self) {
@@ -105,12 +172,15 @@ impl QrCardState {
         if self.status == QrShareStatus::Success && self.badge_spring.tick(dt) {
             animating = true;
         }
+        if self.is_connecting_tunnel {
+            animating = true;
+        }
         animating
     }
 
     pub fn card_bounds(&self, cx: f32, cy: f32) -> (f32, f32, f32, f32) {
-        let card_w = 270.0 * self.dpi_scale;
-        let card_h = 320.0 * self.dpi_scale;
+        let card_w = 290.0 * self.dpi_scale;
+        let card_h = 356.0 * self.dpi_scale;
         let left = cx - card_w / 2.0;
         let top = cy - card_h / 2.0;
         (left, top, card_w, card_h)
@@ -118,12 +188,56 @@ impl QrCardState {
 
     pub fn hit_test_close(&self, rel_x: f32, rel_y: f32, cx: f32, cy: f32) -> bool {
         let (left, top, w, _) = self.card_bounds(cx, cy);
-        let btn_cx = left + w - 22.0 * self.dpi_scale;
-        let btn_cy = top + 22.0 * self.dpi_scale;
+        let btn_cx = left + w - 24.0 * self.dpi_scale;
+        let btn_cy = top + 24.0 * self.dpi_scale;
         let hit_radius = 18.0 * self.dpi_scale;
         let dx = (cx + rel_x) - btn_cx;
         let dy = (cy + rel_y) - btn_cy;
         (dx * dx + dy * dy) <= (hit_radius * hit_radius)
+    }
+
+    pub fn hit_test_tab(&self, rel_x: f32, rel_y: f32, cx: f32, cy: f32) -> Option<QrShareTab> {
+        let scale = self.pop_in.value();
+        let (_, top, _, _) = self.card_bounds(cx, cy);
+        let px = cx + rel_x;
+        let py = cy + rel_y;
+
+        let tab_w = 210.0 * self.dpi_scale * scale;
+        let tab_h = 32.0 * self.dpi_scale * scale;
+        let tab_left = cx - tab_w / 2.0;
+        let tabs_y = top + 64.0 * self.dpi_scale * scale;
+
+        if px >= tab_left && px <= tab_left + tab_w && py >= tabs_y && py <= tabs_y + tab_h {
+            let seg_w = tab_w / 2.0;
+            if px < tab_left + seg_w {
+                Some(QrShareTab::Local)
+            } else {
+                Some(QrShareTab::Internet)
+            }
+        } else {
+            None
+        }
+    }
+
+    pub fn hit_test_download_btn(&self, rel_x: f32, rel_y: f32, cx: f32, cy: f32) -> bool {
+        if self.tab != QrShareTab::Internet || self.is_cloudflared_installed || self.is_downloading {
+            return false;
+        }
+        let scale = self.pop_in.value();
+        let dpi = self.dpi_scale;
+        let (_, top, _, _) = self.card_bounds(cx, cy);
+        let tab_h = 32.0 * dpi * scale;
+        let tabs_y = top + 64.0 * dpi * scale;
+        let pad_top = tabs_y + tab_h + 10.0 * dpi * scale;
+
+        let btn_w = 144.0 * dpi * scale;
+        let btn_h = 32.0 * dpi * scale;
+        let btn_left = cx - btn_w / 2.0;
+        let btn_top = pad_top + 88.0 * dpi * scale;
+
+        let px = cx + rel_x;
+        let py = cy + rel_y;
+        px >= btn_left && px <= btn_left + btn_w && py >= btn_top && py <= btn_top + btn_h
     }
 
     pub fn hit_test_card(&self, rel_x: f32, rel_y: f32, cx: f32, cy: f32) -> bool {
@@ -138,15 +252,15 @@ pub fn format_file_size(bytes: u64) -> String {
     if bytes < 1024 {
         format!("{} B", bytes)
     } else if bytes < 1024 * 1024 {
-        format!("{:.1} KB", bytes as f64 / 1024.0)
+        format!("{:.1} KB", bytes as f32 / 1024.0)
     } else if bytes < 1024 * 1024 * 1024 {
-        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+        format!("{:.1} MB", bytes as f32 / (1024.0 * 1024.0))
     } else {
-        format!("{:.2} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+        format!("{:.2} GB", bytes as f32 / (1024.0 * 1024.0 * 1024.0))
     }
 }
 
-fn truncate_filename(name: &str, max_chars: usize) -> String {
+pub fn truncate_filename(name: &str, max_chars: usize) -> String {
     if name.chars().count() <= max_chars {
         name.to_string()
     } else {
@@ -172,8 +286,8 @@ pub fn render_qr_card(
     let cy = pixmap.height() as f32 / 2.0;
     let dpi = state.dpi_scale;
 
-    let base_w = 270.0 * dpi;
-    let base_h = 320.0 * dpi;
+    let base_w = 290.0 * dpi;
+    let base_h = 356.0 * dpi;
     let half_w = (base_w / 2.0) * scale;
     let half_h = (base_h / 2.0) * scale;
     let left = cx - half_w;
@@ -182,133 +296,85 @@ pub fn render_qr_card(
     let h = base_h * scale;
     let corner_r = 18.0 * dpi * scale;
 
-    // 1. Soft Ambient Shadow (Layered for depth)
-    for i in 1..=4 {
-        let shadow_margin = (i as f32) * 2.5 * dpi * scale;
-        let mut shadow_pb = PathBuilder::new();
-        push_rounded_rect(
-            &mut shadow_pb,
-            left - shadow_margin,
-            top - shadow_margin + 3.0 * dpi * scale,
-            w + shadow_margin * 2.0,
-            h + shadow_margin * 2.0,
-            corner_r + shadow_margin,
-        );
-        if let Some(shadow_path) = shadow_pb.finish() {
-            let mut shadow_paint = Paint::default();
-            shadow_paint.set_color_rgba8(0, 0, 0, 7);
-            shadow_paint.anti_alias = true;
-            pixmap.fill_path(&shadow_path, &shadow_paint, FillRule::Winding, Transform::identity(), None);
-        }
-    }
+    // 1. Soft Ambient Shadow (using unified card_common)
+    draw_card_shadow(pixmap, left, top, w, h, corner_r, scale, dpi);
 
     // 2. Rounded Rectangle Solid Card Body
-    let mut card_pb = PathBuilder::new();
-    push_rounded_rect(&mut card_pb, left, top, w, h, corner_r);
-    if let Some(card_path) = card_pb.finish() {
-        let mut card_paint = Paint::default();
-        if theme.is_dark {
-            card_paint.set_color_rgba8(28, 28, 30, 255); // Deep Charcoal
-        } else {
-            card_paint.set_color_rgba8(255, 255, 255, 255); // Crisp White
-        }
-        card_paint.anti_alias = true;
-        pixmap.fill_path(&card_path, &card_paint, FillRule::Winding, Transform::identity(), None);
+    draw_card_body(pixmap, left, top, w, h, corner_r, scale, dpi, theme);
 
-        // Card Border
-        let mut border_paint = Paint::default();
-        border_paint.set_color(theme.border_subtle);
-        border_paint.anti_alias = true;
-        let border_stroke = Stroke {
-            width: 1.0 * dpi * scale,
-            ..Default::default()
-        };
-        pixmap.stroke_path(&card_path, &border_paint, &border_stroke, Transform::identity(), None);
-    }
+    // 3. Close Button ("✕")
+    let close_x = cx + (base_w / 2.0 - 24.0 * dpi) * scale;
+    let close_y = cy - (base_h / 2.0 - 24.0 * dpi) * scale;
+    draw_close_button(pixmap, close_x, close_y, state.is_close_hovered, scale, dpi, theme);
 
-    // 3. Close Button ("✕") anchored proportionally to (cx, cy)
-    let close_x = cx + (base_w / 2.0 - 22.0 * dpi) * scale;
-    let close_y = cy - (base_h / 2.0 - 22.0 * dpi) * scale;
-
-    // Hover background pill/circle behind close button
-    if state.is_close_hovered {
-        let hover_r = 13.0 * dpi * scale;
-        let mut hover_pb = PathBuilder::new();
-        hover_pb.push_circle(close_x, close_y, hover_r);
-        if let Some(hover_path) = hover_pb.finish() {
-            let mut hover_paint = Paint::default();
-            if theme.is_dark {
-                hover_paint.set_color_rgba8(255, 255, 255, 22);
-            } else {
-                hover_paint.set_color_rgba8(0, 0, 0, 16);
-            }
-            hover_paint.anti_alias = true;
-            pixmap.fill_path(&hover_path, &hover_paint, FillRule::Winding, Transform::identity(), None);
-        }
-    }
-
-    let close_half = 4.8 * dpi * scale;
-    let mut close_pb = PathBuilder::new();
-    close_pb.move_to(close_x - close_half, close_y - close_half);
-    close_pb.line_to(close_x + close_half, close_y + close_half);
-    close_pb.move_to(close_x + close_half, close_y - close_half);
-    close_pb.line_to(close_x - close_half, close_y + close_half);
-    if let Some(close_path) = close_pb.finish() {
-        let mut close_paint = Paint::default();
-        if state.is_close_hovered {
-            close_paint.set_color(theme.text_primary);
-        } else {
-            close_paint.set_color(theme.text_secondary);
-        }
-        close_paint.anti_alias = true;
-        let stroke = Stroke {
-            width: 1.8 * dpi * scale,
-            line_cap: LineCap::Round,
-            ..Default::default()
-        };
-        pixmap.stroke_path(&close_path, &close_paint, &stroke, Transform::identity(), None);
-    }
-
-    // 4. Header: File Name & Size (Anchored proportionally to center)
-    let short_name = truncate_filename(&state.file_name, 24);
-    let title_y = cy - (base_h / 2.0 - 26.0 * dpi) * scale;
+    // 4. Header: File Name & Size
+    let short_name = truncate_filename(&state.file_name, 22);
+    let title_y = cy - (base_h / 2.0 - 24.0 * dpi) * scale;
     fonts.draw_text_centered(
         pixmap,
         &short_name,
         cx,
         title_y,
-        17.0 * dpi * scale,
+        18.5 * dpi * scale,
         theme.text_primary,
         true,
     );
 
-    let sub_y = cy - (base_h / 2.0 - 47.0 * dpi) * scale;
+    let sub_y = cy - (base_h / 2.0 - 45.0 * dpi) * scale;
     let sub_text = format!("{} • Ready to Download", state.file_size_formatted);
     fonts.draw_text_centered(
         pixmap,
         &sub_text,
         cx,
         sub_y,
-        13.0 * dpi * scale,
+        13.5 * dpi * scale,
         theme.text_secondary,
         false,
     );
 
-    // 5. QR Code High-Contrast Inset White Pad (Anchored to center)
+    // 5. Segmented Tabs: [ LOCAL | INTERNET ] (Height 32px, 8.0px rounded container)
+    let tab_w = 210.0 * dpi * scale;
+    let tab_h = 32.0 * dpi * scale;
+    let tab_left = cx - tab_w / 2.0;
+    let tabs_y = cy - (base_h / 2.0 - 64.0 * dpi) * scale;
+
+    let active_idx = match state.tab {
+        QrShareTab::Local => 0,
+        QrShareTab::Internet => 1,
+    };
+    let hovered_idx = state.hovered_tab.map(|t| match t {
+        QrShareTab::Local => 0,
+        QrShareTab::Internet => 1,
+    });
+    draw_segmented_tabs(
+        pixmap,
+        tab_left,
+        tabs_y,
+        tab_w,
+        tab_h,
+        &["LOCAL", "INTERNET"],
+        active_idx,
+        hovered_idx,
+        scale,
+        dpi,
+        theme,
+        fonts,
+    );
+
+    // 6. QR Code High-Contrast Inset White Pad
     let pad_size = 176.0 * dpi * scale;
     let pad_left = cx - pad_size / 2.0;
-    let pad_top = cy - (base_h / 2.0 - 64.0 * dpi) * scale;
+    let pad_top = tabs_y + tab_h + 10.0 * dpi * scale;
     let pad_r = 8.0 * dpi * scale;
 
     let mut pad_pb = PathBuilder::new();
     push_rounded_rect(&mut pad_pb, pad_left, pad_top, pad_size, pad_size, pad_r);
     if let Some(pad_path) = pad_pb.finish() {
         let mut pad_paint = Paint::default();
-        pad_paint.set_color_rgba8(255, 255, 255, 255); // Pure white for 100% optical contrast
+        pad_paint.set_color_rgba8(255, 255, 255, 255);
         pad_paint.anti_alias = true;
         pixmap.fill_path(&pad_path, &pad_paint, FillRule::Winding, Transform::identity(), None);
 
-        // Pad subtle border
         let mut pad_border = Paint::default();
         pad_border.set_color_rgba8(220, 220, 225, 255);
         pad_border.anti_alias = true;
@@ -319,40 +385,181 @@ pub fn render_qr_card(
         pixmap.stroke_path(&pad_path, &pad_border, &pad_stroke, Transform::identity(), None);
     }
 
-    // 6. Draw QR Code Vector Modules in 100% PERFECT LINEAR SYNC with Pad
-    // No .floor() quantization so modules scale continuously with the pad
-    let n = state.qr_matrix.len();
-    if n > 0 {
-        let quiet_modules = 4.0;
-        let total_modules = (n as f32) + quiet_modules * 2.0;
-        let module_size = pad_size / total_modules;
-        let pad_margin = quiet_modules * module_size;
+    // 7. QR Modules or Connecting / Downloading / Error message
+    if state.tab == QrShareTab::Internet && !state.is_cloudflared_installed {
+        if state.is_downloading {
+            fonts.draw_text_centered(
+                pixmap,
+                "Downloading...",
+                cx,
+                pad_top + pad_size / 2.0 - 20.0 * dpi * scale,
+                14.5 * dpi * scale,
+                Color::from_rgba8(40, 40, 55, 255),
+                true,
+            );
+            fonts.draw_text_centered(
+                pixmap,
+                "Cloudflare Tunnel",
+                cx,
+                pad_top + pad_size / 2.0 - 2.0 * dpi * scale,
+                12.5 * dpi * scale,
+                Color::from_rgba8(110, 110, 125, 255),
+                false,
+            );
 
-        let mut qr_pb = PathBuilder::new();
-        for r in 0..n {
-            for c in 0..n {
-                if state.qr_matrix[r][c] {
-                    let mx = pad_left + pad_margin + (c as f32) * module_size;
-                    let my = pad_top + pad_margin + (r as f32) * module_size;
-                    // +0.1 subpixel overlap ensures continuous solid ink without seams
-                    if let Some(rect) = Rect::from_xywh(mx, my, module_size + 0.1, module_size + 0.1) {
-                        qr_pb.push_rect(rect);
+            // Progress bar
+            let bar_w = 110.0 * dpi * scale;
+            let bar_h = 5.0 * dpi * scale;
+            let bar_left = cx - bar_w / 2.0;
+            let bar_top = pad_top + pad_size / 2.0 + 16.0 * dpi * scale;
+            let mut bar_bg_pb = PathBuilder::new();
+            push_rounded_rect(&mut bar_bg_pb, bar_left, bar_top, bar_w, bar_h, 2.5 * dpi * scale);
+            if let Some(p) = bar_bg_pb.finish() {
+                let mut pt = Paint::default();
+                pt.set_color_rgba8(220, 222, 230, 255);
+                pt.anti_alias = true;
+                pixmap.fill_path(&p, &pt, FillRule::Winding, Transform::identity(), None);
+            }
+            let fill_pct = (state.download_pct.unwrap_or(40) as f32 / 100.0).clamp(0.05, 1.0);
+            let mut bar_fg_pb = PathBuilder::new();
+            push_rounded_rect(&mut bar_fg_pb, bar_left, bar_top, bar_w * fill_pct, bar_h, 2.5 * dpi * scale);
+            if let Some(p) = bar_fg_pb.finish() {
+                let mut pt = Paint::default();
+                pt.set_color(theme.slice_hover_fill);
+                pt.anti_alias = true;
+                pixmap.fill_path(&p, &pt, FillRule::Winding, Transform::identity(), None);
+            }
+        } else {
+            fonts.draw_text_centered(
+                pixmap,
+                "Internet Sharing",
+                cx,
+                pad_top + 34.0 * dpi * scale,
+                15.0 * dpi * scale,
+                Color::from_rgba8(35, 35, 45, 255),
+                true,
+            );
+            fonts.draw_text_centered(
+                pixmap,
+                "uses Cloudflare Tunnel",
+                cx,
+                pad_top + 54.0 * dpi * scale,
+                12.0 * dpi * scale,
+                Color::from_rgba8(110, 110, 125, 255),
+                false,
+            );
+
+            // Download & Enable button
+            let btn_w = 144.0 * dpi * scale;
+            let btn_h = 32.0 * dpi * scale;
+            let btn_left = cx - btn_w / 2.0;
+            let btn_top = pad_top + 88.0 * dpi * scale;
+            let mut btn_pb = PathBuilder::new();
+            push_rounded_rect(&mut btn_pb, btn_left, btn_top, btn_w, btn_h, 7.0 * dpi * scale);
+            if let Some(btn_path) = btn_pb.finish() {
+                let mut btn_paint = Paint::default();
+                if state.is_download_btn_hovered {
+                    let r = (theme.slice_hover_fill.red() * 1.15).min(1.0);
+                    let g = (theme.slice_hover_fill.green() * 1.15).min(1.0);
+                    let b = (theme.slice_hover_fill.blue() * 1.15).min(1.0);
+                    btn_paint.set_color_rgba8((r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8, 255);
+                } else {
+                    btn_paint.set_color(theme.slice_hover_fill);
+                }
+                btn_paint.anti_alias = true;
+                pixmap.fill_path(&btn_path, &btn_paint, FillRule::Winding, Transform::identity(), None);
+            }
+            fonts.draw_text_centered(
+                pixmap,
+                "Download & Enable",
+                cx,
+                btn_top + btn_h / 2.0,
+                12.5 * dpi * scale,
+                Color::WHITE,
+                true,
+            );
+
+            fonts.draw_text_centered(
+                pixmap,
+                "~35MB • One-time setup",
+                cx,
+                pad_top + 138.0 * dpi * scale,
+                11.0 * dpi * scale,
+                Color::from_rgba8(140, 140, 155, 255),
+                false,
+            );
+        }
+    } else if state.tab == QrShareTab::Internet && state.is_connecting_tunnel {
+        fonts.draw_text_centered(
+            pixmap,
+            "Creating secure link...",
+            cx,
+            pad_top + pad_size / 2.0 - 8.0 * dpi * scale,
+            14.5 * dpi * scale,
+            Color::from_rgba8(80, 80, 95, 255),
+            true,
+        );
+        fonts.draw_text_centered(
+            pixmap,
+            "Preparing public share",
+            cx,
+            pad_top + pad_size / 2.0 + 12.0 * dpi * scale,
+            12.5 * dpi * scale,
+            Color::from_rgba8(120, 120, 135, 255),
+            false,
+        );
+    } else if state.tab == QrShareTab::Internet && state.tunnel_error.is_some() {
+        fonts.draw_text_centered(
+            pixmap,
+            "Connection Failed",
+            cx,
+            pad_top + pad_size / 2.0 - 8.0 * dpi * scale,
+            14.5 * dpi * scale,
+            Color::from_rgba8(220, 60, 60, 255),
+            true,
+        );
+        fonts.draw_text_centered(
+            pixmap,
+            "Switch to Local tab",
+            cx,
+            pad_top + pad_size / 2.0 + 12.0 * dpi * scale,
+            12.5 * dpi * scale,
+            Color::from_rgba8(120, 120, 135, 255),
+            false,
+        );
+    } else {
+        let n = state.qr_matrix.len();
+        if n > 0 {
+            let quiet_modules = 4.0;
+            let total_modules = (n as f32) + quiet_modules * 2.0;
+            let module_size = pad_size / total_modules;
+            let pad_margin = quiet_modules * module_size;
+
+            let mut qr_pb = PathBuilder::new();
+            for r in 0..n {
+                for c in 0..n {
+                    if state.qr_matrix[r][c] {
+                        let mx = pad_left + pad_margin + (c as f32) * module_size;
+                        let my = pad_top + pad_margin + (r as f32) * module_size;
+                        if let Some(rect) = Rect::from_xywh(mx, my, module_size + 0.1, module_size + 0.1) {
+                            qr_pb.push_rect(rect);
+                        }
                     }
                 }
             }
-        }
 
-        if let Some(qr_path) = qr_pb.finish() {
-            let mut qr_paint = Paint::default();
-            qr_paint.set_color_rgba8(18, 18, 20, 255); // Deep Jet Black ink
-            qr_paint.anti_alias = true; // Subpixel antialiasing for continuous smooth motion
-            pixmap.fill_path(&qr_path, &qr_paint, FillRule::Winding, Transform::identity(), None);
+            if let Some(qr_path) = qr_pb.finish() {
+                let mut qr_paint = Paint::default();
+                qr_paint.set_color_rgba8(18, 18, 20, 255);
+                qr_paint.anti_alias = true;
+                pixmap.fill_path(&qr_path, &qr_paint, FillRule::Winding, Transform::identity(), None);
+            }
         }
     }
 
-    // 7. Footer / Live Status Feedback (Anchored proportionally to center)
-    let status_y = cy + (264.0 * dpi - base_h / 2.0) * scale;
-    let instruction_y = cy + (288.0 * dpi - base_h / 2.0) * scale;
+    // 8. Footer Status
+    let status_y = pad_top + pad_size + 18.0 * dpi * scale;
+    let instruction_y = status_y + 18.0 * dpi * scale;
 
     match &state.status {
         QrShareStatus::WaitingForScan => {
@@ -361,29 +568,32 @@ pub fn render_qr_card(
                 "Scan with Phone Camera",
                 cx,
                 status_y,
-                15.5 * dpi * scale,
+                16.0 * dpi * scale,
                 theme.text_primary,
                 true,
             );
+            let mode_desc = match state.tab {
+                QrShareTab::Local => "Connects via Local Wi-Fi",
+                QrShareTab::Internet => "Connects securely over the Internet",
+            };
             fonts.draw_text_centered(
                 pixmap,
-                "Connects via Local Wi-Fi",
+                mode_desc,
                 cx,
                 instruction_y,
-                13.0 * dpi * scale,
+                13.5 * dpi * scale,
                 theme.text_secondary,
                 false,
             );
         }
         QrShareStatus::Scanned => {
-            let scanned_color = theme.slice_hover_fill;
             fonts.draw_text_centered(
                 pixmap,
                 "Device Connected",
                 cx,
                 status_y,
-                15.5 * dpi * scale,
-                scanned_color,
+                16.0 * dpi * scale,
+                theme.slice_hover_fill,
                 true,
             );
             fonts.draw_text_centered(
@@ -391,20 +601,19 @@ pub fn render_qr_card(
                 "Tap download on phone to begin",
                 cx,
                 instruction_y,
-                13.0 * dpi * scale,
+                13.5 * dpi * scale,
                 theme.text_secondary,
                 false,
             );
         }
         QrShareStatus::Sending => {
-            let sending_color = theme.slice_hover_fill; // Exactly matches donut slice hover color
             fonts.draw_text_centered(
                 pixmap,
                 "Sending to Phone...",
                 cx,
                 status_y,
-                15.5 * dpi * scale,
-                sending_color,
+                16.0 * dpi * scale,
+                theme.slice_hover_fill,
                 true,
             );
             fonts.draw_text_centered(
@@ -412,16 +621,15 @@ pub fn render_qr_card(
                 "Downloading file on device",
                 cx,
                 instruction_y,
-                13.0 * dpi * scale,
+                13.5 * dpi * scale,
                 theme.text_secondary,
                 false,
             );
         }
         QrShareStatus::Success => {
-            let emerald = Color::from_rgba8(34, 197, 94, 255); // Vibrant Emerald Green
+            let emerald = Color::from_rgba8(34, 197, 94, 255);
             let b_scale = state.badge_spring.value().max(0.0) * dpi * scale;
 
-            // Emerald Checkmark Icon
             if b_scale > 0.01 {
                 let mut check_pb = PathBuilder::new();
                 let ch_y = status_y - 2.0 * dpi * scale;
@@ -466,14 +674,13 @@ pub fn render_qr_card(
             );
         }
         QrShareStatus::Failed(err) => {
-            let danger = theme.danger_text;
             fonts.draw_text_centered(
                 pixmap,
                 "Transfer Failed",
                 cx,
                 status_y,
                 15.5 * dpi * scale,
-                danger,
+                theme.danger_text,
                 true,
             );
             fonts.draw_text_centered(
@@ -482,23 +689,9 @@ pub fn render_qr_card(
                 cx,
                 instruction_y,
                 12.5 * dpi * scale,
-                danger,
+                theme.danger_text,
                 false,
             );
         }
     }
-}
-
-fn push_rounded_rect(pb: &mut PathBuilder, x: f32, y: f32, w: f32, h: f32, r: f32) {
-    let r = r.min(w / 2.0).min(h / 2.0);
-    pb.move_to(x + r, y);
-    pb.line_to(x + w - r, y);
-    pb.quad_to(x + w, y, x + w, y + r);
-    pb.line_to(x + w, y + h - r);
-    pb.quad_to(x + w, y + h, x + w - r, y + h);
-    pb.line_to(x + r, y + h);
-    pb.quad_to(x, y + h, x, y + h - r);
-    pb.line_to(x, y + r);
-    pb.quad_to(x, y, x + r, y);
-    pb.close();
 }

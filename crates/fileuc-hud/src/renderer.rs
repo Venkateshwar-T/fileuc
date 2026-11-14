@@ -1,3 +1,4 @@
+use crate::card_common::push_rounded_rect;
 use crate::donut_geometry::DonutLayout;
 use crate::font::FontContext;
 use crate::spring::Spring;
@@ -20,6 +21,13 @@ pub struct DonutState {
     pub center_hover: Spring,
     pub dpi_scale: f32,
     pub has_files: bool,
+    pub missing_plugins: Vec<ConversionAction>,
+    pub expanded_group: Option<usize>,
+    pub expand_spring: Spring,
+    pub sub_hover: Option<usize>,
+    pub pending_group: Option<usize>,
+    pub pending_since: Option<std::time::Instant>,
+    pub pending_distance: f32,
 }
 
 impl DonutState {
@@ -46,11 +54,26 @@ impl DonutState {
             center_hover: Spring::new(0.0, 350.0, 26.0),
             dpi_scale: if dpi_scale <= 0.0 { 1.0 } else { dpi_scale },
             has_files,
+            missing_plugins: Vec::new(),
+            expanded_group: None,
+            expand_spring: Spring::new(0.0, 320.0, 24.0),
+            sub_hover: None,
+            pending_group: None,
+            pending_since: None,
+            pending_distance: 0.0,
         }
     }
 
     pub fn set_file_label(&mut self, label: impl Into<String>) {
         self.file_label = Some(label.into());
+    }
+
+    pub fn set_missing_plugins(&mut self, missing: Vec<ConversionAction>) {
+        self.missing_plugins = missing;
+    }
+
+    pub fn is_plugin_missing(&self, action: ConversionAction) -> bool {
+        self.missing_plugins.contains(&action)
     }
 
     pub fn update_content(
@@ -70,6 +93,134 @@ impl DonutState {
         self.file_count = file_count;
         self.file_label = file_label;
         self.has_files = true;
+        self.expanded_group = None;
+        self.expand_spring = Spring::new(0.0, 320.0, 24.0);
+        self.sub_hover = None;
+        self.pending_group = None;
+        self.pending_since = None;
+        self.pending_distance = 0.0;
+    }
+
+    pub fn expand_group(&mut self, group_idx: usize) {
+        if self.expanded_group != Some(group_idx) {
+            self.expanded_group = Some(group_idx);
+            self.expand_spring = Spring::new(0.0, 320.0, 24.0);
+            self.expand_spring.set_target(1.0);
+            self.sub_hover = None;
+        }
+        self.pending_group = None;
+        self.pending_since = None;
+    }
+
+    pub fn collapse_group(&mut self) {
+        if self.expanded_group.is_some() {
+            self.expanded_group = None;
+            self.expand_spring.set_damping(36.0);
+            self.expand_spring.set_target(0.0);
+            self.sub_hover = None;
+        }
+        self.pending_group = None;
+        self.pending_since = None;
+    }
+
+    pub fn track_pointer(&mut self, rel_x: f32, rel_y: f32, pop_out: f32) -> crate::donut_geometry::HitResult {
+        let count = self.actions.len().max(1);
+        let scale = self.pop_in.value();
+        let layout = DonutLayout::with_dpi(
+            63.0 * self.dpi_scale * scale,
+            150.0 * self.dpi_scale * scale,
+            count,
+            self.dpi_scale * scale,
+        );
+
+        let dist = (rel_x * rel_x + rel_y * rel_y).sqrt();
+
+        // 1. Check if pointer hits an expanded sub-slice
+        if let Some(group_idx) = self.expanded_group {
+            if group_idx < self.actions.len() {
+                let action = self.actions[group_idx];
+                if let Some(children) = crate::smart_filter::get_action_children(action) {
+                    if let Some(sub_idx) = layout.hit_test_sub(rel_x, rel_y, group_idx, children.len(), pop_out) {
+                        self.sub_hover = Some(sub_idx);
+                        self.set_hovered(None);
+                        return crate::donut_geometry::HitResult::SubSlice { group_idx, sub_idx };
+                    }
+                }
+            }
+        }
+
+        // 2. Normal donut slice testing
+        let hit = layout.hit_test_with_slack(rel_x, rel_y, pop_out);
+        match hit {
+            crate::donut_geometry::HitResult::Slice(idx) if idx < self.actions.len() => {
+                let action = self.actions[idx];
+                let is_group = crate::smart_filter::get_action_children(action).is_some();
+                if is_group {
+                    if self.expanded_group != Some(idx) {
+                        if self.pending_group != Some(idx) {
+                            self.pending_group = Some(idx);
+                            self.pending_since = Some(std::time::Instant::now());
+                            self.pending_distance = dist;
+                        } else {
+                            // Check for 10px outward movement
+                            if dist - self.pending_distance >= 10.0 * self.dpi_scale {
+                                self.expand_group(idx);
+                            } else if let Some(since) = self.pending_since {
+                                if since.elapsed() >= std::time::Duration::from_millis(160) {
+                                    self.expand_group(idx);
+                                }
+                            }
+                        }
+                    }
+                } else if self.expanded_group.is_some() {
+                    self.collapse_group();
+                }
+                self.sub_hover = None;
+                self.set_hovered(Some(idx));
+                hit
+            }
+            crate::donut_geometry::HitResult::CenterHole => {
+                self.collapse_group();
+                self.set_center_hot(true);
+                hit
+            }
+            crate::donut_geometry::HitResult::Outside => {
+                // If group is expanded, check if pointer is anywhere in the outer fan corridor
+                if let Some(group_idx) = self.expanded_group {
+                    let (_, outer) = layout.sub_radii(pop_out);
+                    let min_r = layout.outer_radius();
+                    let max_r = outer + 20.0 * self.dpi_scale;
+                    let parent_mid = layout.slice_mid_angle(group_idx);
+                    let mut angle = rel_x.atan2(-rel_y);
+                    if angle < 0.0 {
+                        angle += std::f32::consts::TAU;
+                    }
+                    let mut delta = (angle - parent_mid) % std::f32::consts::TAU;
+                    if delta > std::f32::consts::PI {
+                        delta -= std::f32::consts::TAU;
+                    } else if delta < -std::f32::consts::PI {
+                        delta += std::f32::consts::TAU;
+                    }
+
+                    if dist >= min_r && dist <= max_r && delta.abs() <= 0.6 {
+                        // In the corridor: keep expanded and don't collapse!
+                        return crate::donut_geometry::HitResult::Outside;
+                    }
+                }
+                self.collapse_group();
+                self.set_hovered(None);
+                self.set_center_hot(false);
+                hit
+            }
+            crate::donut_geometry::HitResult::SubSlice { group_idx: _, sub_idx } => {
+                self.sub_hover = Some(sub_idx);
+                hit
+            }
+            crate::donut_geometry::HitResult::Slice(_) => {
+                self.collapse_group();
+                hit
+            }
+        }
     }
 
     pub fn set_center_hot(&mut self, hot: bool) {
@@ -112,6 +263,15 @@ impl DonutState {
         if self.center_hover.tick(dt) {
             animating = true;
         }
+        if self.expand_spring.tick(dt) {
+            animating = true;
+        }
+        if let (Some(pending_idx), Some(since)) = (self.pending_group, self.pending_since) {
+            if since.elapsed() >= std::time::Duration::from_millis(160) {
+                self.expand_group(pending_idx);
+                animating = true;
+            }
+        }
         for spring in &mut self.per_slice_highlight {
             if spring.tick(dt) {
                 animating = true;
@@ -144,7 +304,7 @@ pub fn render_donut(
     let shadow_margin = 14.0 * dpi_scale;
 
     let count = state.actions.len().max(1);
-    let layout = DonutLayout::new(base_inner_r, base_outer_r, count);
+    let layout = DonutLayout::with_dpi(base_inner_r, base_outer_r, count, dpi_scale * scale);
     let span = layout.slice_span();
 
     // 0. Invisible Hit-Test Shield covering the entire donut disk
@@ -339,15 +499,208 @@ pub fn render_donut(
                     (ta * 255.0).round() as u8,
                 );
 
-                fonts.draw_text_centered(
-                    pixmap,
-                    action.label(),
-                    label_x,
-                    label_y,
-                    18.5 * dpi_scale,
-                    title_color,
-                    true,
-                );
+                let is_missing = state.is_plugin_missing(*action);
+                let font_size = 18.5 * dpi_scale;
+
+                if is_missing {
+                    let label = action.label();
+                    let text_w = fonts.measure_text(label, font_size, true);
+                    let arrow_w = 8.0 * dpi_scale;
+                    let gap = 5.0 * dpi_scale;
+                    let total_w = text_w + gap + arrow_w;
+
+                    // Draw label text shifted so [Text + Gap + Arrow] is centered at label_x
+                    let text_cx = label_x - (total_w / 2.0) + (text_w / 2.0);
+                    fonts.draw_text_centered(
+                        pixmap,
+                        label,
+                        text_cx,
+                        label_y,
+                        font_size,
+                        title_color,
+                        true,
+                    );
+
+                    // Draw clean vector down-arrow icon (vertical stem + downward arrowhead)
+                    let ar_x = label_x + (total_w / 2.0) - (arrow_w / 2.0);
+                    let ar_y = label_y;
+                    let stem_top = ar_y - 5.5 * dpi_scale;
+                    let stem_bot = ar_y + 5.5 * dpi_scale;
+                    let wing_dx = 3.8 * dpi_scale;
+                    let wing_dy = 3.8 * dpi_scale;
+
+                    let mut ar_pb = PathBuilder::new();
+                    // Vertical stem
+                    ar_pb.move_to(ar_x, stem_top);
+                    ar_pb.line_to(ar_x, stem_bot);
+                    // Downward arrowhead wings
+                    ar_pb.move_to(ar_x - wing_dx, stem_bot - wing_dy);
+                    ar_pb.line_to(ar_x, stem_bot);
+                    ar_pb.line_to(ar_x + wing_dx, stem_bot - wing_dy);
+
+                    if let Some(ar_path) = ar_pb.finish() {
+                        let mut ar_paint = Paint::default();
+                        ar_paint.set_color(title_color);
+                        ar_paint.anti_alias = true;
+                        let stroke = Stroke {
+                            width: 2.0 * dpi_scale,
+                            line_cap: LineCap::Round,
+                            line_join: LineJoin::Round,
+                            ..Default::default()
+                        };
+                        pixmap.stroke_path(&ar_path, &ar_paint, &stroke, Transform::identity(), None);
+                    }
+                } else {
+                    fonts.draw_text_centered(
+                        pixmap,
+                        action.label(),
+                        label_x,
+                        label_y,
+                        font_size,
+                        title_color,
+                        true,
+                    );
+                }
+            }
+        }
+    }
+
+    // 2.5 Draw Sub-slices fan-out if an action group is expanded
+    if state.expand_spring.value() > 0.005 {
+        if let Some(group_idx) = state.expanded_group {
+            if group_idx < state.actions.len() {
+                let parent_action = state.actions[group_idx];
+                if let Some(children) = crate::smart_filter::get_action_children(parent_action) {
+                    let t = state.expand_spring.value().clamp(0.0, 1.0);
+                    let scale_sub = 0.8 + 0.2 * t;
+                    let (sub_inner_r, sub_outer_r) = layout.sub_radii(pop_out);
+                    let parent_mid = layout.slice_mid_angle(group_idx);
+                    let sub_span = layout.sub_span(children.len());
+
+                    let anchor_x = cx + sub_inner_r * parent_mid.sin();
+                    let anchor_y = cy - sub_inner_r * parent_mid.cos();
+
+                    for (sub_k, child_act) in children.iter().enumerate() {
+                        let sub_mid = layout.sub_mid_angle(parent_mid, sub_k, children.len(), sub_span);
+                        let sub_half = sub_span / 2.0 - 2.0 * dpi_scale / sub_outer_r;
+                        let sub_start = sub_mid - sub_half;
+                        let sub_end = sub_mid + sub_half;
+
+                        let pt_sub = |angle: f32, radius: f32| -> (f32, f32) {
+                            let raw_x = cx + radius * angle.sin();
+                            let raw_y = cy - radius * angle.cos();
+                            (
+                                anchor_x + (raw_x - anchor_x) * scale_sub,
+                                anchor_y + (raw_y - anchor_y) * scale_sub,
+                            )
+                        };
+
+                        let corner_sub_r = 4.0 * dpi_scale;
+                        let d_sub_out = corner_sub_r / sub_outer_r;
+                        let d_sub_in = corner_sub_r / sub_inner_r;
+                        let d_sub_r = corner_sub_r;
+
+                        let mut sub_pb = PathBuilder::new();
+                        let p_start = pt_sub(sub_start + d_sub_out, sub_outer_r);
+                        sub_pb.move_to(p_start.0, p_start.1);
+
+                        let steps = 12;
+                        for s in 1..=steps {
+                            let frac = s as f32 / steps as f32;
+                            let a = (sub_start + d_sub_out) + frac * ((sub_end - d_sub_out) - (sub_start + d_sub_out));
+                            let p = pt_sub(a, sub_outer_r);
+                            sub_pb.line_to(p.0, p.1);
+                        }
+
+                        let c_outer_end = pt_sub(sub_end, sub_outer_r);
+                        let p_line_top = pt_sub(sub_end, sub_outer_r - d_sub_r);
+                        sub_pb.quad_to(c_outer_end.0, c_outer_end.1, p_line_top.0, p_line_top.1);
+
+                        let p_line_bot = pt_sub(sub_end, sub_inner_r + d_sub_r);
+                        sub_pb.line_to(p_line_bot.0, p_line_bot.1);
+
+                        let c_inner_end = pt_sub(sub_end, sub_inner_r);
+                        let p_inner_arc_start = pt_sub(sub_end - d_sub_in, sub_inner_r);
+                        sub_pb.quad_to(c_inner_end.0, c_inner_end.1, p_inner_arc_start.0, p_inner_arc_start.1);
+
+                        for s in 1..=steps {
+                            let frac = s as f32 / steps as f32;
+                            let a = (sub_end - d_sub_in) - frac * ((sub_end - d_sub_in) - (sub_start + d_sub_in));
+                            let p = pt_sub(a, sub_inner_r);
+                            sub_pb.line_to(p.0, p.1);
+                        }
+
+                        let c_inner_start = pt_sub(sub_start, sub_inner_r);
+                        let p_start_bot = pt_sub(sub_start, sub_inner_r + d_sub_r);
+                        sub_pb.quad_to(c_inner_start.0, c_inner_start.1, p_start_bot.0, p_start_bot.1);
+
+                        let p_start_top = pt_sub(sub_start, sub_outer_r - d_sub_r);
+                        sub_pb.line_to(p_start_top.0, p_start_top.1);
+
+                        let c_outer_start = pt_sub(sub_start, sub_outer_r);
+                        sub_pb.quad_to(c_outer_start.0, c_outer_start.1, p_start.0, p_start.1);
+                        sub_pb.close();
+
+                        if let Some(sub_path) = sub_pb.finish() {
+                            // Sub-slice drop shadow (ambient soft depth)
+                            let mut shadow_paint = Paint::default();
+                            shadow_paint.set_color_rgba8(0, 0, 0, (28.0 * t).round() as u8);
+                            shadow_paint.anti_alias = true;
+                            let shadow_trans = Transform::from_translate(0.0, 3.0 * dpi_scale);
+                            pixmap.fill_path(&sub_path, &shadow_paint, FillRule::Winding, shadow_trans, None);
+
+                            let mut shadow_paint2 = Paint::default();
+                            shadow_paint2.set_color_rgba8(0, 0, 0, (14.0 * t).round() as u8);
+                            shadow_paint2.anti_alias = true;
+                            let shadow_trans2 = Transform::from_translate(0.0, 6.0 * dpi_scale);
+                            pixmap.fill_path(&sub_path, &shadow_paint2, FillRule::Winding, shadow_trans2, None);
+
+                            let is_sub_hovered = state.sub_hover == Some(sub_k);
+                            let mut sub_paint = Paint::default();
+                            if is_sub_hovered {
+                                sub_paint.set_color(theme.slice_hover_fill);
+                            } else {
+                                sub_paint.set_color(theme.slice_fill);
+                            }
+                            sub_paint.anti_alias = true;
+                            pixmap.fill_path(&sub_path, &sub_paint, FillRule::Winding, Transform::identity(), None);
+
+                            let mut sub_stroke = Paint::default();
+                            if is_sub_hovered {
+                                sub_stroke.set_color(theme.slice_hover_border);
+                            } else {
+                                sub_stroke.set_color(theme.border_subtle);
+                            }
+                            sub_stroke.anti_alias = true;
+                            let stroke = Stroke {
+                                width: 1.0 * dpi_scale,
+                                ..Default::default()
+                            };
+                            pixmap.stroke_path(&sub_path, &sub_stroke, &stroke, Transform::identity(), None);
+
+                            let sub_mid_r = (sub_inner_r + sub_outer_r) / 2.0;
+                            let raw_lx = cx + sub_mid_r * sub_mid.sin();
+                            let raw_ly = cy - sub_mid_r * sub_mid.cos();
+                            let lx = anchor_x + (raw_lx - anchor_x) * scale_sub;
+                            let ly = anchor_y + (raw_ly - anchor_y) * scale_sub;
+
+                            let label_color = if is_sub_hovered {
+                                theme.text_on_accent
+                            } else {
+                                theme.text_primary
+                            };
+                            fonts.draw_text_centered(
+                                pixmap,
+                                child_act.label(),
+                                lx,
+                                ly,
+                                18.5 * dpi_scale,
+                                label_color,
+                                true,
+                            );
+                        }
+                    }
+                }
             }
         }
     }
@@ -399,7 +752,7 @@ pub fn render_donut(
         pixmap.stroke_path(&center_path, &stroke_paint, &stroke, Transform::identity(), None);
 
         // Center Text
-        let title_text = match &state.file_label {
+        let default_title_text = match &state.file_label {
             Some(lbl) => lbl.clone(),
             None => {
                 if state.file_count == 1 {
@@ -410,7 +763,21 @@ pub fn render_donut(
             }
         };
 
-        let subtitle_text = if ch > 0.4 {
+        let is_hovered_missing = if ch <= 0.4 {
+            if let Some(idx) = state.hovered_slice {
+                if let Some(action) = state.actions.get(idx) {
+                    state.is_plugin_missing(*action)
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        let subtitle = if ch > 0.4 {
             "Cancel".to_string()
         } else if let Some(idx) = state.hovered_slice {
             if let Some(action) = state.actions.get(idx) {
@@ -426,7 +793,7 @@ pub fn render_donut(
         let tit_g = theme.text_primary.green() + ch * (theme.danger_text.green() - theme.text_primary.green());
         let tit_b = theme.text_primary.blue() + ch * (theme.danger_text.blue() - theme.text_primary.blue());
         let tit_a = theme.text_primary.alpha() + ch * (theme.danger_text.alpha() - theme.text_primary.alpha());
-        let title_color = Color::from_rgba8(
+        let tit_c = Color::from_rgba8(
             (tit_r * 255.0).round() as u8,
             (tit_g * 255.0).round() as u8,
             (tit_b * 255.0).round() as u8,
@@ -437,33 +804,147 @@ pub fn render_donut(
         let sub_g = theme.text_secondary.green() + ch * (theme.danger_text.green() - theme.text_secondary.green());
         let sub_b = theme.text_secondary.blue() + ch * (theme.danger_text.blue() - theme.text_secondary.blue());
         let sub_a = theme.text_secondary.alpha() + ch * (theme.danger_text.alpha() - theme.text_secondary.alpha());
-        let subtitle_color = Color::from_rgba8(
+        let sub_c = Color::from_rgba8(
             (sub_r * 255.0).round() as u8,
             (sub_g * 255.0).round() as u8,
             (sub_b * 255.0).round() as u8,
             (sub_a * 255.0).round() as u8,
         );
 
-        fonts.draw_text_centered(
-            pixmap,
-            &title_text,
-            cx,
-            cy - 9.0 * dpi_scale,
-            16.5 * dpi_scale,
-            title_color,
-            true,
-        );
+        if is_hovered_missing {
+            fonts.draw_text_centered(
+                pixmap,
+                "Plugin",
+                cx,
+                cy - 10.5 * dpi_scale,
+                16.5 * dpi_scale,
+                theme.danger_text,
+                true,
+            );
+            fonts.draw_text_centered(
+                pixmap,
+                "Required",
+                cx,
+                cy + 10.5 * dpi_scale,
+                16.5 * dpi_scale,
+                theme.danger_text,
+                true,
+            );
+        } else {
+            let title_font_size = 16.5 * dpi_scale;
+            let sub_font_size = 14.5 * dpi_scale;
+            let max_sub_w = 90.0 * dpi_scale;
 
-        fonts.draw_text_centered(
-            pixmap,
-            &subtitle_text,
-            cx,
-            cy + 11.5 * dpi_scale,
-            15.5 * dpi_scale,
-            subtitle_color,
-            false,
-        );
+            let sub_lines = wrap_center_subtitle(fonts, &subtitle, sub_font_size, max_sub_w);
+            let sub_line_count = sub_lines.len().max(1) as f32;
+            let gap = 5.0 * dpi_scale;
+            let sub_line_h = 16.0 * dpi_scale;
+            let total_h = title_font_size + gap + sub_line_count * sub_line_h;
+
+            let top_y = cy - (total_h / 2.0);
+            let title_y = top_y + (title_font_size / 2.0);
+            let sub_y0 = top_y + title_font_size + gap + (sub_line_h / 2.0);
+
+            fonts.draw_text_centered(
+                pixmap,
+                &default_title_text,
+                cx,
+                title_y,
+                title_font_size,
+                tit_c,
+                true,
+            );
+
+            for (i, line) in sub_lines.iter().enumerate() {
+                let line_y = sub_y0 + (i as f32) * sub_line_h;
+                fonts.draw_text_centered(
+                    pixmap,
+                    line,
+                    cx,
+                    line_y,
+                    sub_font_size,
+                    sub_c,
+                    false,
+                );
+            }
+        }
     }
+}
+
+fn wrap_center_subtitle<'a>(fonts: &FontContext, text: &'a str, font_size: f32, max_w: f32) -> Vec<&'a str> {
+    if text.is_empty() {
+        return Vec::new();
+    }
+    let total_w = fonts.measure_text(text, font_size, false);
+    if total_w <= max_w {
+        return vec![text];
+    }
+
+    let mut lines: Vec<&'a str> = Vec::with_capacity(3);
+    let mut line_start = 0;
+    let mut last_space = 0;
+
+    for (idx, ch) in text.char_indices() {
+        if ch.is_whitespace() {
+            let candidate = &text[line_start..idx];
+            if fonts.measure_text(candidate, font_size, false) > max_w && last_space > line_start {
+                lines.push(&text[line_start..last_space]);
+                line_start = last_space + 1;
+            }
+            last_space = idx;
+        }
+    }
+
+    if line_start < text.len() {
+        let remainder = &text[line_start..];
+        if fonts.measure_text(remainder, font_size, false) > max_w && last_space > line_start {
+            lines.push(&text[line_start..last_space]);
+            lines.push(&text[last_space + 1..]);
+        } else {
+            lines.push(remainder);
+        }
+    }
+
+    lines
+}
+
+fn wrap_failure_message(fonts: &FontContext, msg: &str, font_size: f32, max_w: f32) -> Vec<String> {
+    let mut lines = Vec::new();
+    for paragraph in msg.lines() {
+        let trimmed = paragraph.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let words: Vec<&str> = trimmed.split_whitespace().collect();
+        if words.is_empty() {
+            continue;
+        }
+
+        let mut current_line = String::new();
+        for word in words {
+            let candidate = if current_line.is_empty() {
+                word.to_string()
+            } else {
+                format!("{} {}", current_line, word)
+            };
+
+            if fonts.measure_text(&candidate, font_size, false) <= max_w {
+                current_line = candidate;
+            } else {
+                if !current_line.is_empty() {
+                    lines.push(current_line);
+                }
+                current_line = word.to_string();
+            }
+        }
+        if !current_line.is_empty() {
+            lines.push(current_line);
+        }
+    }
+    if lines.is_empty() {
+        lines.push("Conversion failed".to_string());
+    }
+    lines
 }
 
 pub fn render_progress(
@@ -477,15 +958,44 @@ pub fn render_progress(
 
     let cx = pixmap.width() as f32 / 2.0;
     let cy = pixmap.height() as f32 / 2.0;
-    let plate_radius = 44.0 * dpi_scale;
-    let track_radius = 35.0 * dpi_scale; // 9px padding from true circumference!
+    let err_font_size = 13.5 * dpi_scale;
+    let max_text_w = 260.0 * dpi_scale;
+    let (plate_w, plate_h, is_failure, wrapped_failure_lines) = match tracker.state() {
+        crate::progress_ring::ProgressState::Failure(msg) => {
+            let wrapped = wrap_failure_message(fonts, msg, err_font_size, max_text_w);
+            let mut longest = 0.0f32;
+            for line in &wrapped {
+                let w = fonts.measure_text(line, err_font_size, false);
+                if w > longest {
+                    longest = w;
+                }
+            }
+            let plate_w = (longest + 48.0 * dpi_scale).clamp(180.0 * dpi_scale, pixmap.width() as f32 - 32.0 * dpi_scale);
+            let line_count = wrapped.len().clamp(1, 4);
+            let plate_h = 56.0 * dpi_scale + (line_count as f32) * 19.0 * dpi_scale;
+            (plate_w, plate_h, true, wrapped)
+        }
+        _ => (88.0 * dpi_scale, 88.0 * dpi_scale, false, Vec::new()),
+    };
+
+    let half_w = plate_w / 2.0;
+    let half_h = plate_h / 2.0;
+    let corner_r = 18.0 * dpi_scale;
+    let track_radius = 35.0 * dpi_scale;
     let stroke_w = 4.8 * dpi_scale;
 
     // 1. Draw Plate Soft Shadow
     for i in 1..=4 {
-        let shadow_r = plate_radius + (i as f32) * 1.5 * dpi_scale;
+        let shadow_margin = (i as f32) * 1.5 * dpi_scale;
         let mut shadow_pb = PathBuilder::new();
-        shadow_pb.push_circle(cx, cy + 2.0 * dpi_scale, shadow_r);
+        push_rounded_rect(
+            &mut shadow_pb,
+            cx - half_w - shadow_margin,
+            cy - half_h - shadow_margin + 2.0 * dpi_scale,
+            plate_w + shadow_margin * 2.0,
+            plate_h + shadow_margin * 2.0,
+            corner_r + shadow_margin,
+        );
         if let Some(shadow_path) = shadow_pb.finish() {
             let mut shadow_paint = Paint::default();
             shadow_paint.set_color_rgba8(0, 0, 0, 8);
@@ -494,15 +1004,22 @@ pub fn render_progress(
         }
     }
 
-    // 2. Draw Solid Plate Background (Solid White in Light Mode)
+    // 2. Draw Solid Plate Background
     let mut plate_pb = PathBuilder::new();
-    plate_pb.push_circle(cx, cy, plate_radius);
+    push_rounded_rect(
+        &mut plate_pb,
+        cx - half_w,
+        cy - half_h,
+        plate_w,
+        plate_h,
+        corner_r,
+    );
     if let Some(plate_path) = plate_pb.finish() {
         let mut plate_paint = Paint::default();
         if theme.is_dark {
             plate_paint.set_color_rgba8(32, 32, 30, 255);
         } else {
-            plate_paint.set_color_rgba8(255, 255, 255, 255); // Solid White
+            plate_paint.set_color_rgba8(255, 255, 255, 255);
         }
         plate_paint.anti_alias = true;
         pixmap.fill_path(&plate_path, &plate_paint, FillRule::Winding, Transform::identity(), None);
@@ -518,22 +1035,24 @@ pub fn render_progress(
         pixmap.stroke_path(&plate_path, &border_paint, &border_stroke, Transform::identity(), None);
     }
 
-    // 3. Draw Circular Background Track
-    let mut bg_track_pb = PathBuilder::new();
-    bg_track_pb.push_circle(cx, cy, track_radius);
-    if let Some(bg_track_path) = bg_track_pb.finish() {
-        let mut bg_track_paint = Paint::default();
-        if theme.is_dark {
-            bg_track_paint.set_color_rgba8(60, 60, 56, 255);
-        } else {
-            bg_track_paint.set_color_rgba8(235, 233, 228, 255);
+    // 3. Draw Circular Background Track (for non-failure progress)
+    if !is_failure {
+        let mut bg_track_pb = PathBuilder::new();
+        bg_track_pb.push_circle(cx, cy, track_radius);
+        if let Some(bg_track_path) = bg_track_pb.finish() {
+            let mut bg_track_paint = Paint::default();
+            if theme.is_dark {
+                bg_track_paint.set_color_rgba8(60, 60, 56, 255);
+            } else {
+                bg_track_paint.set_color_rgba8(235, 233, 228, 255);
+            }
+            bg_track_paint.anti_alias = true;
+            let track_stroke = Stroke {
+                width: stroke_w,
+                ..Default::default()
+            };
+            pixmap.stroke_path(&bg_track_path, &bg_track_paint, &track_stroke, Transform::identity(), None);
         }
-        bg_track_paint.anti_alias = true;
-        let track_stroke = Stroke {
-            width: stroke_w,
-            ..Default::default()
-        };
-        pixmap.stroke_path(&bg_track_path, &bg_track_paint, &track_stroke, Transform::identity(), None);
     }
 
     // 4. Progress Arc or Outcome
@@ -610,16 +1129,18 @@ pub fn render_progress(
                 );
             }
         }
-        crate::progress_ring::ProgressState::Failure(msg) => {
+        crate::progress_ring::ProgressState::Failure(_) => {
+            let badge_y = cy - (plate_h / 2.0) + 24.0 * dpi_scale;
+
             // Failure red ring
             let mut ring_pb = PathBuilder::new();
-            ring_pb.push_circle(cx, cy, track_radius);
+            ring_pb.push_circle(cx, badge_y, 13.0 * dpi_scale);
             if let Some(ring_path) = ring_pb.finish() {
                 let mut ring_paint = Paint::default();
                 ring_paint.set_color(theme.danger_text);
                 ring_paint.anti_alias = true;
                 let stroke = Stroke {
-                    width: stroke_w,
+                    width: 2.2 * dpi_scale,
                     ..Default::default()
                 };
                 pixmap.stroke_path(&ring_path, &ring_paint, &stroke, Transform::identity(), None);
@@ -627,17 +1148,17 @@ pub fn render_progress(
 
             // Cross in center
             let mut x_pb = PathBuilder::new();
-            let x_scale = dpi_scale;
-            x_pb.move_to(cx - 7.0 * x_scale, cy - 7.0 * x_scale);
-            x_pb.line_to(cx + 7.0 * x_scale, cy + 7.0 * x_scale);
-            x_pb.move_to(cx + 7.0 * x_scale, cy - 7.0 * x_scale);
-            x_pb.line_to(cx - 7.0 * x_scale, cy + 7.0 * x_scale);
+            let x_scale = dpi_scale * 0.75;
+            x_pb.move_to(cx - 4.5 * x_scale, badge_y - 4.5 * x_scale);
+            x_pb.line_to(cx + 4.5 * x_scale, badge_y + 4.5 * x_scale);
+            x_pb.move_to(cx + 4.5 * x_scale, badge_y - 4.5 * x_scale);
+            x_pb.line_to(cx - 4.5 * x_scale, badge_y + 4.5 * x_scale);
             if let Some(x_path) = x_pb.finish() {
                 let mut x_paint = Paint::default();
                 x_paint.set_color(theme.danger_text);
                 x_paint.anti_alias = true;
                 let stroke = Stroke {
-                    width: 2.8 * x_scale,
+                    width: 2.0 * x_scale,
                     line_cap: LineCap::Round,
                     line_join: LineJoin::Round,
                     ..Default::default()
@@ -645,15 +1166,20 @@ pub fn render_progress(
                 pixmap.stroke_path(&x_path, &x_paint, &stroke, Transform::identity(), None);
             }
 
-            fonts.draw_text_centered(
-                pixmap,
-                msg,
-                cx,
-                cy + 24.0 * dpi_scale,
-                11.0 * dpi_scale,
-                theme.danger_text,
-                false,
-            );
+            // Draw wrapped lines centered with comfortable spacing and padding
+            let text_start_y = badge_y + 20.0 * dpi_scale;
+            for (i, line) in wrapped_failure_lines.iter().take(4).enumerate() {
+                let line_y = text_start_y + (i as f32) * 18.5 * dpi_scale;
+                fonts.draw_text_centered(
+                    pixmap,
+                    line,
+                    cx,
+                    line_y,
+                    err_font_size,
+                    if i == 0 { theme.danger_text } else { theme.text_primary },
+                    i == 0,
+                );
+            }
         }
     }
 }

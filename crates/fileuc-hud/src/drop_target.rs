@@ -3,7 +3,7 @@ use std::sync::mpsc::Sender;
 use windows::core::implement;
 use windows::Win32::Foundation::{BOOL, HWND, POINT, POINTL};
 use windows::Win32::System::Com::{IDataObject, FORMATETC, TYMED_HGLOBAL};
-use windows::Win32::System::Memory::{GlobalLock, GlobalUnlock};
+use windows::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
 use windows::Win32::System::Ole::{
     ReleaseStgMedium, CF_HDROP, DROPEFFECT_COPY, DROPEFFECT_NONE, DROPEFFECT, IDropTarget,
     IDropTarget_Impl,
@@ -84,18 +84,14 @@ pub fn parse_hdrop_buffer(buf: &[u8]) -> Result<Vec<PathBuf>, DropError> {
     let mut paths = Vec::new();
 
     if is_wide {
-        let u16_slice = unsafe {
-            std::slice::from_raw_parts(
-                buf[offset..].as_ptr() as *const u16,
-                (buf.len() - offset) / 2,
-            )
-        };
-
         let mut current_chars = Vec::new();
-        for &ch in u16_slice {
+        let mut i = offset;
+        while i + 1 < buf.len() {
+            let ch = u16::from_le_bytes([buf[i], buf[i + 1]]);
+            i += 2;
             if ch == 0 {
                 if current_chars.is_empty() {
-                    break; // double null
+                    break; // double null terminates list
                 }
                 let s = String::from_utf16_lossy(&current_chars);
                 paths.push(PathBuf::from(s));
@@ -141,13 +137,19 @@ pub fn parse_cf_hdrop(data_object: &IDataObject) -> Result<Vec<PathBuf>, DropErr
             return Err(DropError::InvalidData);
         }
 
+        let alloc_size = GlobalSize(hglobal);
+        if alloc_size < std::mem::size_of::<DropFilesHeader>() {
+            ReleaseStgMedium(&mut medium);
+            return Err(DropError::InvalidData);
+        }
+
         let ptr = GlobalLock(hglobal);
         if ptr.is_null() {
             ReleaseStgMedium(&mut medium);
             return Err(DropError::GlobalLockFailed);
         }
 
-        let slice = std::slice::from_raw_parts(ptr as *const u8, 1024 * 1024);
+        let slice = std::slice::from_raw_parts(ptr as *const u8, alloc_size);
         let result = parse_hdrop_buffer(slice);
 
         let _ = GlobalUnlock(hglobal);

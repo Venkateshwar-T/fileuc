@@ -1,15 +1,21 @@
 pub mod archive;
+pub mod data;
 pub mod doc;
 pub mod excel;
 pub mod heic;
 pub mod image;
 pub mod indic;
-pub mod ir;
 pub mod media;
-pub mod ocr;
+pub mod metadata_strip;
+pub mod ocr_searchable;
 pub mod output;
+pub mod output_guard;
 pub mod pdf;
 pub mod pdfium;
 pub mod pptx;
+pub mod renamer;
+pub mod size_reducer;
 pub mod svg;
 pub mod text;
+
+pub use output_guard::OutputGuard;

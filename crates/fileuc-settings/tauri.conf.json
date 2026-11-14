@@ -1,0 +1,33 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "FileUC",
+  "version": "0.1.0",
+  "identifier": "com.fileuc.settings",
+  "build": {
+    "frontendDist": "./ui/dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "FileUC",
+        "width": 800,
+        "height": 560,
+        "resizable": false,
+        "maximizable": false,
+        "center": true,
+        "decorations": true,
+        "visible": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "icon": [
+      "icons/icon.ico",
+      "icons/icon.png"
+    ]
+  }
+}

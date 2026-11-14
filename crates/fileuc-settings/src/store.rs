@@ -38,10 +38,16 @@ impl Default for HudStyleChoice {
     }
 }
 
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
     #[serde(default = "default_trigger_modifier")]
     pub trigger_modifier: String,
+    #[serde(default = "default_qr_shortcut")]
+    pub qr_shortcut: String,
     #[serde(default)]
     pub hud_style: HudStyleChoice,
     #[serde(default)]
@@ -50,14 +56,22 @@ pub struct AppSettings {
     pub theme: ThemeChoice,
     #[serde(default = "default_accent_color")]
     pub accent_color: String,
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub auto_start: bool,
+    #[serde(default = "default_true")]
+    pub show_tray_icon: bool,
+    #[serde(default = "default_true")]
+    pub service_enabled: bool,
     #[serde(default)]
     pub ffmpeg_path: Option<PathBuf>,
 }
 
 fn default_trigger_modifier() -> String {
     "Ctrl".to_string()
+}
+
+fn default_qr_shortcut() -> String {
+    "Ctrl+Shift+Q".to_string()
 }
 
 fn default_accent_color() -> String {
@@ -68,11 +82,14 @@ impl Default for AppSettings {
     fn default() -> Self {
         Self {
             trigger_modifier: default_trigger_modifier(),
+            qr_shortcut: default_qr_shortcut(),
             hud_style: HudStyleChoice::default(),
             output_mode: OutputMode::default(),
             theme: ThemeChoice::default(),
             accent_color: default_accent_color(),
-            auto_start: false,
+            auto_start: true,
+            show_tray_icon: true,
+            service_enabled: true,
             ffmpeg_path: None,
         }
     }
@@ -80,6 +97,12 @@ impl Default for AppSettings {
 
 pub struct SettingsStore {
     path: PathBuf,
+}
+
+impl Default for SettingsStore {
+    fn default() -> Self {
+        Self::new(Self::default_path())
+    }
 }
 
 impl SettingsStore {

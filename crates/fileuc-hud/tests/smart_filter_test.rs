@@ -13,8 +13,9 @@ fn images_get_image_actions() {
             ConversionAction::ToJpg,
             ConversionAction::ToWebp,
             ConversionAction::ToPdf,
-            ConversionAction::ToSvg,
-            ConversionAction::Ocr,
+            ConversionAction::ReduceSize,
+            ConversionAction::StripMetadata,
+            ConversionAction::BulkRename,
             ConversionAction::Share,
         ]
     );
@@ -28,11 +29,10 @@ fn single_unencrypted_pdf_gets_lock_pdf() {
         actions,
         vec![
             ConversionAction::LockPdf,
-            ConversionAction::PdfToDocx,
-            ConversionAction::PdfToPptx,
-            ConversionAction::PdfToXlsx,
+            ConversionAction::OfficeGroup,
+            ConversionAction::PdfOcr,
             ConversionAction::PdfToImages,
-            ConversionAction::CompressPdf,
+            ConversionAction::ReduceSize,
             ConversionAction::SplitPdf,
             ConversionAction::Share,
         ]
@@ -48,12 +48,12 @@ fn multiple_unencrypted_pdfs_get_lock_pdf() {
         vec![
             ConversionAction::LockPdf,
             ConversionAction::MergePdf,
-            ConversionAction::PdfToDocx,
-            ConversionAction::PdfToPptx,
-            ConversionAction::PdfToXlsx,
+            ConversionAction::OfficeGroup,
+            ConversionAction::PdfOcr,
             ConversionAction::PdfToImages,
-            ConversionAction::CompressPdf,
-            ConversionAction::CreateZip,
+            ConversionAction::ReduceSize,
+            ConversionAction::BulkRename,
+            ConversionAction::Share,
         ]
     );
 }
@@ -76,12 +76,12 @@ fn multiple_encrypted_pdfs_get_unlock_pdf() {
         vec![
             ConversionAction::UnlockPdf,
             ConversionAction::MergePdf,
-            ConversionAction::PdfToDocx,
-            ConversionAction::PdfToPptx,
-            ConversionAction::PdfToXlsx,
+            ConversionAction::OfficeGroup,
+            ConversionAction::PdfOcr,
             ConversionAction::PdfToImages,
-            ConversionAction::CompressPdf,
-            ConversionAction::CreateZip,
+            ConversionAction::ReduceSize,
+            ConversionAction::BulkRename,
+            ConversionAction::Share,
         ]
     );
 }
@@ -102,12 +102,12 @@ fn mixed_encrypted_and_unencrypted_pdfs_omit_both_lock_and_unlock() {
         actions,
         vec![
             ConversionAction::MergePdf,
-            ConversionAction::PdfToDocx,
-            ConversionAction::PdfToPptx,
-            ConversionAction::PdfToXlsx,
+            ConversionAction::OfficeGroup,
+            ConversionAction::PdfOcr,
             ConversionAction::PdfToImages,
-            ConversionAction::CompressPdf,
-            ConversionAction::CreateZip,
+            ConversionAction::ReduceSize,
+            ConversionAction::BulkRename,
+            ConversionAction::Share,
         ]
     );
 }
@@ -125,11 +125,10 @@ fn single_encrypted_pdf_gets_unlock_pdf() {
         actions,
         vec![
             ConversionAction::UnlockPdf,
-            ConversionAction::PdfToDocx,
-            ConversionAction::PdfToPptx,
-            ConversionAction::PdfToXlsx,
+            ConversionAction::OfficeGroup,
+            ConversionAction::PdfOcr,
             ConversionAction::PdfToImages,
-            ConversionAction::CompressPdf,
+            ConversionAction::ReduceSize,
             ConversionAction::SplitPdf,
             ConversionAction::Share,
         ]
@@ -137,13 +136,15 @@ fn single_encrypted_pdf_gets_unlock_pdf() {
 }
 
 #[test]
-fn excel_documents_get_pdf_zip_share() {
+fn excel_documents_get_zip_share() {
     let files = vec![PathBuf::from("sheet.xlsx")];
     let actions = filter_actions(&files, false);
     assert_eq!(
         actions,
         vec![
             ConversionAction::ExcelToPdf,
+            ConversionAction::XlsxToCsv,
+            ConversionAction::XlsxToJson,
             ConversionAction::CreateZip,
             ConversionAction::Share,
         ]
@@ -158,7 +159,6 @@ fn word_documents_get_pdf_and_zip() {
         actions,
         vec![
             ConversionAction::DocToPdf,
-            ConversionAction::DocxToPptx,
             ConversionAction::CreateZip,
             ConversionAction::Share,
         ]
@@ -166,14 +166,13 @@ fn word_documents_get_pdf_and_zip() {
 }
 
 #[test]
-fn pptx_documents_get_pdf_docx_zip() {
+fn pptx_documents_get_pdf_zip() {
     let files = vec![PathBuf::from("slides.pptx")];
     let actions = filter_actions(&files, false);
     assert_eq!(
         actions,
         vec![
             ConversionAction::PptxToPdf,
-            ConversionAction::PptxToDocx,
             ConversionAction::CreateZip,
             ConversionAction::Share,
         ]
@@ -279,6 +278,8 @@ fn markdown_gets_to_html() {
     assert_eq!(
         actions,
         vec![
+            ConversionAction::MdToPdf,
+            ConversionAction::MdToTxt,
             ConversionAction::ToHtml,
             ConversionAction::CreateZip,
             ConversionAction::Share,
@@ -293,9 +294,53 @@ fn text_gets_to_html() {
     assert_eq!(
         actions,
         vec![
+            ConversionAction::TxtToPdf,
+            ConversionAction::TxtToMd,
             ConversionAction::ToHtml,
             ConversionAction::CreateZip,
             ConversionAction::Share,
         ]
+    );
+}
+
+#[test]
+fn html_gets_to_pdf() {
+    let files = vec![PathBuf::from("index.html")];
+    let actions = filter_actions(&files, false);
+    assert_eq!(
+        actions,
+        vec![
+            ConversionAction::HtmlToPdf,
+            ConversionAction::CreateZip,
+            ConversionAction::Share,
+        ]
+    );
+}
+
+#[test]
+fn audio_files_get_audio_actions() {
+    let files = vec![PathBuf::from("song.wav")];
+    let actions = filter_actions(&files, true);
+    assert_eq!(
+        actions,
+        vec![
+            ConversionAction::ToMp3,
+            ConversionAction::ToOgg,
+            ConversionAction::ToAac,
+            ConversionAction::ToFlac,
+            ConversionAction::ReduceSize,
+            ConversionAction::StripMetadata,
+            ConversionAction::Share,
+        ]
+    );
+}
+
+#[test]
+fn office_group_has_docx_and_excel_children() {
+    use fileuc_hud::smart_filter::get_action_children;
+    let children = get_action_children(ConversionAction::OfficeGroup);
+    assert_eq!(
+        children,
+        Some(&[ConversionAction::PdfToDocx, ConversionAction::PdfToExcel][..])
     );
 }

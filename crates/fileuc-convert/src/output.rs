@@ -62,3 +62,21 @@ pub fn resolve_suffixed_output_path(
         counter += 1;
     }
 }
+
+/// Cleans a Windows path by ensuring it is absolute and removing any `\\?\` UNC prefix
+/// that causes COM errors with Microsoft Office applications.
+pub fn clean_windows_path(path: &Path) -> String {
+    let abs = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|c| c.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
+    };
+    let s = abs.to_string_lossy().to_string();
+    if let Some(stripped) = s.strip_prefix(r"\\?\") {
+        stripped.to_string()
+    } else {
+        s
+    }
+}

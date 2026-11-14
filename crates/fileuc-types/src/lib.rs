@@ -22,14 +22,9 @@ pub enum ConversionAction {
     SplitPdf,
     CompressPdf,
     PdfToImages,
-    PdfToDocx,
-    PdfToDoc,
-    PdfToPptx,
-    PdfToXlsx,
     PptxToPdf,
-    DocxToPptx,
-    PptxToDocx,
     DocToPdf,
+    PdfToDocx,
     CreateZip,
     Create7z,
     OneZip,
@@ -37,12 +32,33 @@ pub enum ConversionAction {
     VideoToGif,
     VideoToMp3,
     CompressVideo,
-    Ocr,
     Share,
     LockPdf,
     UnlockPdf,
-    ExcelToPdf,
     ToHtml,
+    MdToPdf,
+    TxtToPdf,
+    HtmlToPdf,
+    ExcelToPdf,
+    PdfToExcel,
+    PdfOcr,
+    XlsxToCsv,
+    XlsxToJson,
+    CsvToXlsx,
+    CsvToJson,
+    JsonToXlsx,
+    JsonToCsv,
+    MdToTxt,
+    TxtToMd,
+    StripMetadata,
+    ReduceSize,
+    BulkRename,
+    OfficeGroup,
+    ToMp3,
+    ToWav,
+    ToOgg,
+    ToAac,
+    ToFlac,
 }
 
 impl ConversionAction {
@@ -66,14 +82,9 @@ impl ConversionAction {
             ConversionAction::SplitPdf => "Split PDF",
             ConversionAction::CompressPdf => "Compress",
             ConversionAction::PdfToImages => "Images",
-            ConversionAction::PdfToDocx => "DOCX",
-            ConversionAction::PdfToDoc => "DOC",
-            ConversionAction::PdfToPptx => "PPTX",
-            ConversionAction::PdfToXlsx => "Excel",
             ConversionAction::PptxToPdf => "PDF",
-            ConversionAction::DocxToPptx => "PPTX",
-            ConversionAction::PptxToDocx => "DOCX",
             ConversionAction::DocToPdf => "PDF",
+            ConversionAction::PdfToDocx => "DOCX",
             ConversionAction::CreateZip => "ZIP",
             ConversionAction::Create7z => "7Z",
             ConversionAction::OneZip => "One Zip",
@@ -81,12 +92,33 @@ impl ConversionAction {
             ConversionAction::VideoToGif => "GIF",
             ConversionAction::VideoToMp3 => "MP3",
             ConversionAction::CompressVideo => "Compress",
-            ConversionAction::Ocr => "OCR",
             ConversionAction::Share => "Share",
             ConversionAction::LockPdf => "Lock",
             ConversionAction::UnlockPdf => "Unlock",
-            ConversionAction::ExcelToPdf => "PDF",
             ConversionAction::ToHtml => "HTML",
+            ConversionAction::MdToPdf => "PDF",
+            ConversionAction::TxtToPdf => "PDF",
+            ConversionAction::HtmlToPdf => "PDF",
+            ConversionAction::ExcelToPdf => "PDF",
+            ConversionAction::PdfToExcel => "EXCEL",
+            ConversionAction::PdfOcr => "OCR",
+            ConversionAction::XlsxToCsv => "CSV",
+            ConversionAction::XlsxToJson => "JSON",
+            ConversionAction::CsvToXlsx => "EXCEL",
+            ConversionAction::CsvToJson => "JSON",
+            ConversionAction::JsonToXlsx => "EXCEL",
+            ConversionAction::JsonToCsv => "CSV",
+            ConversionAction::MdToTxt => "TXT",
+            ConversionAction::TxtToMd => "MD",
+            ConversionAction::StripMetadata => "Clean",
+            ConversionAction::ReduceSize => "Reduce",
+            ConversionAction::BulkRename => "Rename",
+            ConversionAction::OfficeGroup => "Office",
+            ConversionAction::ToMp3 => "MP3",
+            ConversionAction::ToWav => "WAV",
+            ConversionAction::ToOgg => "OGG",
+            ConversionAction::ToAac => "AAC",
+            ConversionAction::ToFlac => "FLAC",
         }
     }
 
@@ -98,14 +130,27 @@ impl ConversionAction {
             ConversionAction::MergePdf => "Combine",
             ConversionAction::SplitPdf => "Separate",
             ConversionAction::CompressPdf | ConversionAction::CompressVideo => "Shrink",
-            ConversionAction::Ocr => "Text",
-            ConversionAction::PdfToPptx | ConversionAction::DocxToPptx => "Slides",
-            ConversionAction::PptxToDocx => "Document",
             ConversionAction::LockPdf => "Protect",
             ConversionAction::UnlockPdf => "Decrypt",
-            ConversionAction::ExcelToPdf | ConversionAction::PdfToXlsx => "Spreadsheet",
+            ConversionAction::PdfToDocx => "Word",
             ConversionAction::PdfToImages => "Extract",
             ConversionAction::ToHtml => "Markup",
+            ConversionAction::PdfToExcel => "Spreadsheet",
+            ConversionAction::PdfOcr => "OCR",
+            ConversionAction::XlsxToCsv | ConversionAction::JsonToCsv => "Data",
+            ConversionAction::XlsxToJson | ConversionAction::CsvToJson => "Data",
+            ConversionAction::CsvToXlsx | ConversionAction::JsonToXlsx => "Spreadsheet",
+            ConversionAction::MdToTxt => "Plain Text",
+            ConversionAction::TxtToMd => "Markdown",
+            ConversionAction::StripMetadata => "No Meta",
+            ConversionAction::ReduceSize => "Size Limit",
+            ConversionAction::BulkRename => "Bulk",
+            ConversionAction::OfficeGroup => "Documents",
+            ConversionAction::ToMp3
+            | ConversionAction::ToWav
+            | ConversionAction::ToOgg
+            | ConversionAction::ToAac
+            | ConversionAction::ToFlac => "Audio",
             _ => "Convert",
         }
     }
@@ -130,20 +175,35 @@ impl ConversionAction {
             ConversionAction::ToPdf
             | ConversionAction::DocToPdf
             | ConversionAction::PptxToPdf
+            | ConversionAction::MdToPdf
+            | ConversionAction::TxtToPdf
+            | ConversionAction::HtmlToPdf
             | ConversionAction::ExcelToPdf => "Convert to PDF",
+            ConversionAction::PdfToDocx => "Convert to DOCX",
+            ConversionAction::PdfToExcel => "Extract to Excel",
+            ConversionAction::PdfOcr => "Make PDF Searchable",
             ConversionAction::ToSvg => "Convert to SVG",
-            ConversionAction::PdfToDocx | ConversionAction::PptxToDocx => "Convert to DOCX",
-            ConversionAction::PdfToDoc => "Convert to DOC",
-            ConversionAction::PdfToPptx | ConversionAction::DocxToPptx => "Convert to PPTX",
-            ConversionAction::PdfToXlsx => "Convert to Excel",
             ConversionAction::CreateZip | ConversionAction::OneZip => "Convert to ZIP",
             ConversionAction::Create7z => "Convert to 7Z",
             ConversionAction::VideoToGif => "Convert to GIF",
             ConversionAction::VideoToMp3 => "Convert to MP3",
             ConversionAction::PdfToImages => "Extract Images",
             ConversionAction::ToHtml => "Convert to HTML",
-            ConversionAction::Ocr => "Convert to OCR",
+            ConversionAction::XlsxToCsv | ConversionAction::JsonToCsv => "Convert to CSV",
+            ConversionAction::XlsxToJson | ConversionAction::CsvToJson => "Convert to JSON",
+            ConversionAction::CsvToXlsx | ConversionAction::JsonToXlsx => "Convert to Excel",
+            ConversionAction::MdToTxt => "Convert to Text",
+            ConversionAction::TxtToMd => "Convert to Markdown",
             ConversionAction::ToGrayscale => "Convert to Grayscale",
+            ConversionAction::StripMetadata => "Strip Metadata",
+            ConversionAction::ReduceSize => "Reduce File Size",
+            ConversionAction::BulkRename => "Bulk Rename Files",
+            ConversionAction::OfficeGroup => "Office Formats",
+            ConversionAction::ToMp3 => "Convert to MP3",
+            ConversionAction::ToWav => "Convert to WAV",
+            ConversionAction::ToOgg => "Convert to OGG",
+            ConversionAction::ToAac => "Convert to AAC",
+            ConversionAction::ToFlac => "Convert to FLAC",
         }
     }
 }
@@ -186,6 +246,55 @@ pub enum ImageFormat {
     Avif,
 }
 
+impl ImageFormat {
+    pub fn extension(&self) -> &'static str {
+        match self {
+            ImageFormat::Png => "png",
+            ImageFormat::Jpeg => "jpg",
+            ImageFormat::WebP => "webp",
+            ImageFormat::Bmp => "bmp",
+            ImageFormat::Ico => "ico",
+            ImageFormat::Tiff => "tiff",
+            ImageFormat::Avif => "avif",
+        }
+    }
+
+    pub fn mime_type(&self) -> &'static str {
+        match self {
+            ImageFormat::Png => "image/png",
+            ImageFormat::Jpeg => "image/jpeg",
+            ImageFormat::WebP => "image/webp",
+            ImageFormat::Bmp => "image/bmp",
+            ImageFormat::Ico => "image/x-icon",
+            ImageFormat::Tiff => "image/tiff",
+            ImageFormat::Avif => "image/avif",
+        }
+    }
+
+    pub fn from_extension(ext: &str) -> Option<Self> {
+        match ext.trim_start_matches('.').to_ascii_lowercase().as_str() {
+            "png" => Some(ImageFormat::Png),
+            "jpg" | "jpeg" => Some(ImageFormat::Jpeg),
+            "webp" => Some(ImageFormat::WebP),
+            "bmp" => Some(ImageFormat::Bmp),
+            "ico" => Some(ImageFormat::Ico),
+            "tiff" | "tif" => Some(ImageFormat::Tiff),
+            "avif" => Some(ImageFormat::Avif),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum IpcMessage {
+    OpenSettings,
+    OpenSettingsTab(i32),
+    ReloadSettings,
+    ToggleService(bool),
+    Quit,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -193,6 +302,7 @@ mod tests {
     #[test]
     fn test_center_prompts_match_specification() {
         assert_eq!(ConversionAction::Share.center_prompt(), "Share to Mobile");
+        assert_eq!(ConversionAction::PdfToDocx.center_prompt(), "Convert to DOCX");
         assert_eq!(ConversionAction::LockPdf.center_prompt(), "Lock PDF");
         assert_eq!(ConversionAction::UnlockPdf.center_prompt(), "Unlock PDF");
         assert_eq!(ConversionAction::SplitPdf.center_prompt(), "Split PDF");

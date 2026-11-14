@@ -469,6 +469,7 @@ pub fn extract_archive(src: &Path, output_dir: &Path) -> Result<(), ConvertError
         let mut cmd = std::process::Command::new(&z_exe);
         cmd.arg("x")
             .arg("-y")
+            .arg("-p-")
             .arg(format!("-o{}", output_dir.to_string_lossy()))
             .arg(src);
 
@@ -477,6 +478,7 @@ pub fn extract_archive(src: &Path, output_dir: &Path) -> Result<(), ConvertError
             cmd.creation_flags(CREATE_NO_WINDOW);
         }
 
+        cmd.stdin(std::process::Stdio::null());
         cmd.stdout(std::process::Stdio::null());
         cmd.stderr(std::process::Stdio::piped());
 
