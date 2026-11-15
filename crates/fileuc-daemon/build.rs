@@ -45,7 +45,15 @@ const MANIFEST: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?
 "#;
 
 fn main() {
-    if env::var("CARGO_CFG_TARGET_OS").unwrap_or_default() == "windows" {
+    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    let target_env = env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
+
+    // On MSVC, tauri-build in fileuc-settings already compiles and embeds the Windows
+    // resource (VERSIONINFO, icon, and manifest). Compiling a second resource on MSVC
+    // causes CVTRES fatal error CVT1100: duplicate resource. type:VERSION, name:1.
+    // We only compile resources via winres on GNU toolchains (MinGW) where ld
+    // requires direct object file linking for the .rsrc section.
+    if target_os == "windows" && target_env == "gnu" {
         let mut res = winres::WindowsResource::new();
         res.set_icon("icon.ico");
         res.set("ProductName", "FileUC");
