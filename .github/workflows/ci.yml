@@ -1,0 +1,49 @@
+name: CI (Code Checks & Tests)
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+env:
+  ACTIONS_ALLOW_USE_UNSECURE_NODE20: 'true'
+
+jobs:
+  check-and-test:
+    name: Lint, Test & Frontend Build
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+          cache-dependency-path: crates/fileuc-settings/ui/package-lock.json
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build Svelte Frontend
+        shell: pwsh
+        run: |
+          cd crates/fileuc-settings/ui
+          npm ci
+          npm run build
+
+      - name: Cargo Check Workspace
+        shell: pwsh
+        run: cargo check --workspace
+
+      - name: Run Core Tests
+        shell: pwsh
+        run: cargo test -p fileuc-hud -p fileuc-hook -p fileuc-types
