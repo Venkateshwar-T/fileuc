@@ -23,6 +23,7 @@ dist/
 test_lhr_*.txt
 /Filee/
 .superpowers/
+docs/
 
 # OS / IDE
 .DS_Store
