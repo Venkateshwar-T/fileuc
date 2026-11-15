@@ -243,7 +243,7 @@ pub fn render_bulk_rename_card(
         }
     }
 
-    // 6. Dynamic Live Preview line (tight spacing, 12px gap from input)
+    // 6. Dynamic Live Preview line (tight spacing, 12px gap from input, bounds-checked)
     let preview_y = top + 120.0 * dpi * scale;
     let base = if state.input_text.trim().is_empty() {
         "Trip"
@@ -257,12 +257,25 @@ pub fn render_bulk_rename_card(
         format!("Preview: {base}_01{ext}, {base}_02{ext}, ... {base}_{:02}{ext}", state.file_count)
     };
 
+    let font_size = 13.0 * dpi * scale;
+    let max_w = input_w - 4.0 * dpi * scale;
+    let mut display_text = preview_text;
+    if fonts.measure_text(&display_text, font_size, false) > max_w {
+        while !display_text.is_empty()
+            && fonts.measure_text(&format!("{display_text}..."), font_size, false) > max_w
+        {
+            display_text.pop();
+        }
+        let trimmed = display_text.trim_end_matches([',', ' ']);
+        display_text = format!("{trimmed}...");
+    }
+
     fonts.draw_text_left(
         pixmap,
-        &preview_text,
+        &display_text,
         input_x + 2.0 * dpi * scale,
         preview_y,
-        13.0 * dpi * scale,
+        font_size,
         theme.text_secondary,
         false,
     );

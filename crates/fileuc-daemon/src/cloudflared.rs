@@ -31,7 +31,7 @@ pub fn get_cloudflared_path() -> PathBuf {
 pub fn is_cloudflared_installed() -> bool {
     let path = get_cloudflared_path();
     if let Ok(meta) = std::fs::metadata(&path) {
-        meta.is_file() && meta.len() > 10_000_000 // Official binary is ~35MB
+        meta.is_file() && meta.len() > 10_000_000 // Official binary is ~50MB
     } else {
         false
     }

@@ -11,7 +11,7 @@
     <div>
       <h1 class="text-xl font-bold tracking-tight text-gray-100 font-display">FileUC</h1>
       <p class="text-xs text-gray-400 mt-1">
-        Universal instant file converter and local share engine
+        Instant desktop file utility, quick actions, and mobile sharing engine
       </p>
     </div>
 
@@ -67,10 +67,10 @@
             <span class="inline-flex items-center justify-center h-5 w-5 rounded-full bg-accent text-[11px] font-bold text-white shadow-sm">
               3
             </span>
-            <span class="text-sm font-semibold text-gray-100">Drop to Convert</span>
+            <span class="text-sm font-semibold text-gray-100">Drop for Action</span>
           </div>
           <p class="text-xs text-gray-400 mt-1 leading-normal">
-            Release over any action slice to convert or share in milliseconds.
+            Release over any slice to convert, rename, compress, protect, or share in milliseconds.
           </p>
         </div>
       </Card>

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { store } from '../stores/settings.svelte';
   import Card from '../components/Card.svelte';
-  import { Loader2 } from 'lucide-svelte';
+  import { Loader2, Trash2, Download } from 'lucide-svelte';
 </script>
 
 <div class="space-y-6">
@@ -32,9 +32,9 @@
         <!-- Bottom Status & Action Row -->
         {#if store.ffmpeg.downloading}
           <div class="flex items-center justify-between gap-4">
-            <div class="flex items-center gap-2 text-xs text-accent">
+            <div class="flex items-center gap-2 text-xs text-accent font-medium">
               <Loader2 size={14} class="animate-spin shrink-0" />
-              <span class="truncate">Installing... {store.ffmpeg.statusText}</span>
+              <span>Installing</span>
             </div>
 
             <div class="flex items-center gap-3 shrink-0">
@@ -64,17 +64,19 @@
                 <button
                   type="button"
                   onclick={() => store.uninstallPlugin('ffmpeg')}
-                  class="px-3.5 py-1.5 text-xs font-medium rounded-lg border border-red-500/25 bg-red-500/10 hover:bg-red-500/20 hover:border-red-500/40 text-red-400 hover:text-red-300 transition-all duration-150 cursor-pointer shadow-sm active:scale-[0.98]"
+                  class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-red-500/30 bg-red-500/10 hover:bg-red-600 hover:border-red-600 text-red-400 hover:text-white transition-all duration-150 cursor-pointer shadow-sm active:scale-[0.98]"
                 >
-                  Uninstall
+                  <Trash2 size={13} class="shrink-0" />
+                  <span>Uninstall</span>
                 </button>
               {:else}
                 <button
                   type="button"
                   onclick={() => store.installPlugin('ffmpeg')}
-                  class="px-4 py-1.5 text-xs font-medium text-white rounded-lg shadow-sm bg-accent hover:bg-accent-hover transition-all duration-150 cursor-pointer active:scale-[0.98]"
+                  class="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-medium text-white rounded-lg shadow-sm bg-accent hover:bg-accent-hover transition-all duration-150 cursor-pointer active:scale-[0.98]"
                 >
-                  Install
+                  <Download size={13} class="shrink-0" />
+                  <span>Install</span>
                 </button>
               {/if}
             </div>
@@ -94,9 +96,9 @@
         <!-- Bottom Status & Action Row -->
         {#if store.docx.downloading}
           <div class="flex items-center justify-between gap-4">
-            <div class="flex items-center gap-2 text-xs text-accent">
+            <div class="flex items-center gap-2 text-xs text-accent font-medium">
               <Loader2 size={14} class="animate-spin shrink-0" />
-              <span class="truncate">Installing... {store.docx.statusText}</span>
+              <span>Installing</span>
             </div>
 
             <div class="flex items-center gap-3 shrink-0">
@@ -126,17 +128,19 @@
                 <button
                   type="button"
                   onclick={() => store.uninstallPlugin('docx')}
-                  class="px-3.5 py-1.5 text-xs font-medium rounded-lg border border-red-500/25 bg-red-500/10 hover:bg-red-500/20 hover:border-red-500/40 text-red-400 hover:text-red-300 transition-all duration-150 cursor-pointer shadow-sm active:scale-[0.98]"
+                  class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-red-500/30 bg-red-500/10 hover:bg-red-600 hover:border-red-600 text-red-400 hover:text-white transition-all duration-150 cursor-pointer shadow-sm active:scale-[0.98]"
                 >
-                  Uninstall
+                  <Trash2 size={13} class="shrink-0" />
+                  <span>Uninstall</span>
                 </button>
               {:else}
                 <button
                   type="button"
                   onclick={() => store.installPlugin('docx')}
-                  class="px-4 py-1.5 text-xs font-medium text-white rounded-lg shadow-sm bg-accent hover:bg-accent-hover transition-all duration-150 cursor-pointer active:scale-[0.98]"
+                  class="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-medium text-white rounded-lg shadow-sm bg-accent hover:bg-accent-hover transition-all duration-150 cursor-pointer active:scale-[0.98]"
                 >
-                  Install
+                  <Download size={13} class="shrink-0" />
+                  <span>Install</span>
                 </button>
               {/if}
             </div>

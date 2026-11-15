@@ -580,11 +580,22 @@ pub fn render_donut(
                     let anchor_x = cx + sub_inner_r * parent_mid.sin();
                     let anchor_y = cy - sub_inner_r * parent_mid.cos();
 
+                    let corner_sub_r = 10.0 * dpi_scale;
+                    let gap_px = 3.0 * dpi_scale;
+
                     for (sub_k, child_act) in children.iter().enumerate() {
                         let sub_mid = layout.sub_mid_angle(parent_mid, sub_k, children.len(), sub_span);
-                        let sub_half = sub_span / 2.0 - 2.0 * dpi_scale / sub_outer_r;
-                        let sub_start = sub_mid - sub_half;
-                        let sub_end = sub_mid + sub_half;
+                        let sub_outer_half = (sub_span / 2.0 - gap_px / (2.0 * sub_outer_r)).max(0.01);
+                        let sub_inner_half = (sub_span / 2.0 - gap_px / (2.0 * sub_inner_r)).max(0.01);
+
+                        let start_angle_outer = sub_mid - sub_outer_half;
+                        let end_angle_outer = sub_mid + sub_outer_half;
+                        let start_angle_inner = sub_mid - sub_inner_half;
+                        let end_angle_inner = sub_mid + sub_inner_half;
+
+                        let d_sub_out = (corner_sub_r / sub_outer_r).min(sub_outer_half * 0.45);
+                        let d_sub_in = (corner_sub_r / sub_inner_r).min(sub_inner_half * 0.45);
+                        let d_sub_r = corner_sub_r.min((sub_outer_r - sub_inner_r) * 0.35);
 
                         let pt_sub = |angle: f32, radius: f32| -> (f32, f32) {
                             let raw_x = cx + radius * angle.sin();
@@ -595,49 +606,44 @@ pub fn render_donut(
                             )
                         };
 
-                        let corner_sub_r = 4.0 * dpi_scale;
-                        let d_sub_out = corner_sub_r / sub_outer_r;
-                        let d_sub_in = corner_sub_r / sub_inner_r;
-                        let d_sub_r = corner_sub_r;
-
                         let mut sub_pb = PathBuilder::new();
-                        let p_start = pt_sub(sub_start + d_sub_out, sub_outer_r);
+                        let p_start = pt_sub(start_angle_outer + d_sub_out, sub_outer_r);
                         sub_pb.move_to(p_start.0, p_start.1);
 
-                        let steps = 12;
+                        let steps = 16;
                         for s in 1..=steps {
                             let frac = s as f32 / steps as f32;
-                            let a = (sub_start + d_sub_out) + frac * ((sub_end - d_sub_out) - (sub_start + d_sub_out));
+                            let a = (start_angle_outer + d_sub_out) + frac * ((end_angle_outer - d_sub_out) - (start_angle_outer + d_sub_out));
                             let p = pt_sub(a, sub_outer_r);
                             sub_pb.line_to(p.0, p.1);
                         }
 
-                        let c_outer_end = pt_sub(sub_end, sub_outer_r);
-                        let p_line_top = pt_sub(sub_end, sub_outer_r - d_sub_r);
+                        let c_outer_end = pt_sub(end_angle_outer, sub_outer_r);
+                        let p_line_top = pt_sub(end_angle_outer, sub_outer_r - d_sub_r);
                         sub_pb.quad_to(c_outer_end.0, c_outer_end.1, p_line_top.0, p_line_top.1);
 
-                        let p_line_bot = pt_sub(sub_end, sub_inner_r + d_sub_r);
+                        let p_line_bot = pt_sub(end_angle_inner, sub_inner_r + d_sub_r);
                         sub_pb.line_to(p_line_bot.0, p_line_bot.1);
 
-                        let c_inner_end = pt_sub(sub_end, sub_inner_r);
-                        let p_inner_arc_start = pt_sub(sub_end - d_sub_in, sub_inner_r);
+                        let c_inner_end = pt_sub(end_angle_inner, sub_inner_r);
+                        let p_inner_arc_start = pt_sub(end_angle_inner - d_sub_in, sub_inner_r);
                         sub_pb.quad_to(c_inner_end.0, c_inner_end.1, p_inner_arc_start.0, p_inner_arc_start.1);
 
                         for s in 1..=steps {
                             let frac = s as f32 / steps as f32;
-                            let a = (sub_end - d_sub_in) - frac * ((sub_end - d_sub_in) - (sub_start + d_sub_in));
+                            let a = (end_angle_inner - d_sub_in) - frac * ((end_angle_inner - d_sub_in) - (start_angle_inner + d_sub_in));
                             let p = pt_sub(a, sub_inner_r);
                             sub_pb.line_to(p.0, p.1);
                         }
 
-                        let c_inner_start = pt_sub(sub_start, sub_inner_r);
-                        let p_start_bot = pt_sub(sub_start, sub_inner_r + d_sub_r);
+                        let c_inner_start = pt_sub(start_angle_inner, sub_inner_r);
+                        let p_start_bot = pt_sub(start_angle_inner, sub_inner_r + d_sub_r);
                         sub_pb.quad_to(c_inner_start.0, c_inner_start.1, p_start_bot.0, p_start_bot.1);
 
-                        let p_start_top = pt_sub(sub_start, sub_outer_r - d_sub_r);
+                        let p_start_top = pt_sub(start_angle_outer, sub_outer_r - d_sub_r);
                         sub_pb.line_to(p_start_top.0, p_start_top.1);
 
-                        let c_outer_start = pt_sub(sub_start, sub_outer_r);
+                        let c_outer_start = pt_sub(start_angle_outer, sub_outer_r);
                         sub_pb.quad_to(c_outer_start.0, c_outer_start.1, p_start.0, p_start.1);
                         sub_pb.close();
 
