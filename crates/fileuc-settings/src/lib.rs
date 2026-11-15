@@ -2,6 +2,7 @@ pub mod autostart;
 pub mod commands;
 pub mod plugin_manager;
 pub mod store;
+pub mod updater;
 
 use std::sync::atomic::{AtomicI32, Ordering};
 use store::AppSettings;
@@ -127,6 +128,8 @@ pub fn run_tauri(initial_tab: i32) {
             commands::uninstall_plugin,
             commands::get_initial_tab,
             commands::get_system_theme,
+            commands::check_for_updates,
+            commands::open_release_url,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

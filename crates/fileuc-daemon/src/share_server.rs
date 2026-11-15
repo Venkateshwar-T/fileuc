@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tempfile::NamedTempFile;
 use zip::write::SimpleFileOptions;
 use zip::ZipWriter;
@@ -53,9 +53,65 @@ impl Drop for ShareServerHandle {
 }
 
 pub fn get_local_lan_ip() -> Option<IpAddr> {
-    let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
-    socket.connect("8.8.8.8:80").ok()?;
-    Some(socket.local_addr().ok()?.ip())
+    // 1. Query UDP routing table with well-known targets
+    for probe in &["8.8.8.8:80", "1.1.1.1:80", "223.5.5.5:80"] {
+        if let Ok(socket) = UdpSocket::bind("0.0.0.0:0") {
+            if socket.connect(probe).is_ok() {
+                if let Ok(addr) = socket.local_addr() {
+                    let ip = addr.ip();
+                    if !ip.is_loopback() && !ip.is_unspecified() {
+                        return Some(ip);
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Query Windows Wi-Fi adapter IPv4
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        if let Ok(output) = std::process::Command::new("powershell")
+            .args(&[
+                "-NoProfile",
+                "-Command",
+                "(Get-NetIPAddress -AddressFamily IPv4 -InterfaceAlias 'Wi-Fi*' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty IPAddress -First 1)",
+            ])
+            .creation_flags(0x08000000)
+            .output()
+        {
+            if output.status.success() {
+                let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if let Ok(ip) = s.parse::<IpAddr>() {
+                    if !ip.is_loopback() {
+                        return Some(ip);
+                    }
+                }
+            }
+        }
+
+        // 3. Fallback: query any active non-loopback IPv4 connection
+        if let Ok(output) = std::process::Command::new("powershell")
+            .args(&[
+                "-NoProfile",
+                "-Command",
+                "(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' } | Select-Object -ExpandProperty IPAddress -First 1)",
+            ])
+            .creation_flags(0x08000000)
+            .output()
+        {
+            if output.status.success() {
+                let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if let Ok(ip) = s.parse::<IpAddr>() {
+                    if !ip.is_loopback() {
+                        return Some(ip);
+                    }
+                }
+            }
+        }
+    }
+
+    None
 }
 
 fn generate_token() -> String {
@@ -133,18 +189,13 @@ pub fn start_share_server(files: &[PathBuf]) -> Result<ShareServerHandle, String
 
     let thread = thread::spawn(move || {
         let keep_temp = shared_temp;
-        let start_time = Instant::now();
-        let timeout = Duration::from_secs(300); // 5-minute inactivity session expiry
-        let download_completed = Arc::new(AtomicBool::new(false));
 
         while !shutdown_clone.load(Ordering::Relaxed) {
-            if start_time.elapsed() >= timeout {
-                break;
-            }
-
             match listener.accept() {
                 Ok((mut stream, _)) => {
+                    let _ = stream.set_nonblocking(false);
                     if let Ok(cloned_sock) = stream.try_clone() {
+                        let _ = cloned_sock.set_nonblocking(false);
                         if let Ok(mut lock) = client_streams_clone.lock() {
                             lock.push(cloned_sock);
                         }
@@ -153,7 +204,6 @@ pub fn start_share_server(files: &[PathBuf]) -> Result<ShareServerHandle, String
                     let name = display_name_clone.clone();
                     let tok = token_clone.clone();
                     let tx_sub = tx.clone();
-                    let completed = download_completed.clone();
                     let temp_holder = keep_temp.clone();
                     thread::spawn(move || {
                         let _keep_alive = temp_holder;
@@ -164,7 +214,6 @@ pub fn start_share_server(files: &[PathBuf]) -> Result<ShareServerHandle, String
                             file_size,
                             &tok,
                             &tx_sub,
-                            &completed,
                         );
                     });
                 }
@@ -264,21 +313,15 @@ fn handle_client(
     file_size: u64,
     token: &str,
     tx: &Sender<ShareServerEvent>,
-    completed: &Arc<AtomicBool>,
 ) {
+    let _ = stream.set_nonblocking(false);
     let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(300)));
-
-    if completed.load(Ordering::SeqCst) {
-        let gone = "HTTP/1.1 410 Gone\r\nContent-Type: text/plain\r\nContent-Length: 26\r\nConnection: close\r\n\r\nDownload already completed";
-        let _ = stream.write_all(gone.as_bytes());
-        let _ = stream.flush();
-        return;
-    }
 
     let Ok(cloned) = stream.try_clone() else {
         return;
     };
+    let _ = cloned.set_nonblocking(false);
     let mut reader = BufReader::new(cloned);
     let mut request_line = String::new();
 
@@ -315,9 +358,18 @@ fn handle_client(
     }
 
     let method = parts[0];
-    let path = parts[1];
+    let raw_path = parts[1];
+    let clean_path = raw_path.split('?').next().unwrap_or(raw_path).trim_end_matches('/');
 
-    if (method == "GET" || method == "HEAD") && path == format!("/s/{}", token) {
+    if clean_path == "/favicon.ico" {
+        let no_content = "HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n";
+        let _ = stream.write_all(no_content.as_bytes());
+        let _ = stream.flush();
+        return;
+    }
+
+    let is_share_page = clean_path == format!("/s/{}", token) || clean_path == "/s" || clean_path.is_empty();
+    if (method == "GET" || method == "HEAD") && is_share_page {
         let _ = tx.send(ShareServerEvent::ClientConnected);
         let html = generate_mobile_html(display_name, file_size, token);
         let response = format!(
@@ -331,7 +383,7 @@ fn handle_client(
         );
         let _ = stream.write_all(response.as_bytes());
         let _ = stream.flush();
-    } else if (method == "GET" || method == "HEAD") && path.starts_with(&format!("/d/{}/", token)) {
+    } else if (method == "GET" || method == "HEAD") && clean_path.starts_with(&format!("/d/{}/", token)) {
         let _ = tx.send(ShareServerEvent::DownloadStarted);
         let ascii_fallback: String = display_name
             .chars()
@@ -367,7 +419,6 @@ fn handle_client(
                         let _ = stream.flush();
                         if end + 1 >= file_size {
                             let _ = tx.send(ShareServerEvent::DownloadFinished);
-                            completed.store(true, Ordering::SeqCst);
                         }
                     }
                 }
@@ -399,7 +450,6 @@ fn handle_client(
                     let _ = std::io::copy(&mut file, stream);
                     let _ = stream.flush();
                     let _ = tx.send(ShareServerEvent::DownloadFinished);
-                    completed.store(true, Ordering::SeqCst);
                 }
             } else {
                 let not_found = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
@@ -407,7 +457,7 @@ fn handle_client(
                 let _ = stream.flush();
             }
         }
-    } else if method == "POST" && path == format!("/api/notify/{}", token) {
+    } else if method == "POST" && clean_path == format!("/api/notify/{}", token) {
         let _ = tx.send(ShareServerEvent::DownloadStarted);
         let json = "{\"status\":\"ok\"}";
         let response = format!(

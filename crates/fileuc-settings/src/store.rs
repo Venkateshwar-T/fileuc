@@ -1,3 +1,4 @@
+use crate::updater::PendingUpdate;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -64,6 +65,8 @@ pub struct AppSettings {
     pub service_enabled: bool,
     #[serde(default)]
     pub ffmpeg_path: Option<PathBuf>,
+    #[serde(default)]
+    pub pending_update: Option<PendingUpdate>,
 }
 
 fn default_trigger_modifier() -> String {
@@ -91,6 +94,7 @@ impl Default for AppSettings {
             show_tray_icon: true,
             service_enabled: true,
             ffmpeg_path: None,
+            pending_update: None,
         }
     }
 }
@@ -123,7 +127,14 @@ impl SettingsStore {
             Ok(d) => d,
             Err(_) => return AppSettings::default(),
         };
-        serde_json::from_str(&data).unwrap_or_default()
+        let mut settings: AppSettings = serde_json::from_str(&data).unwrap_or_default();
+        if let Some(ref pending) = settings.pending_update {
+            if !crate::updater::is_newer_version(&pending.version, env!("CARGO_PKG_VERSION")) {
+                settings.pending_update = None;
+                let _ = self.save(&settings);
+            }
+        }
+        settings
     }
 
     pub fn save(&self, settings: &AppSettings) -> Result<(), std::io::Error> {

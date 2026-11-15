@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Home, Blocks, Sliders } from 'lucide-svelte';
+  import { Home, Blocks, Sliders, RefreshCw, Check } from 'lucide-svelte';
   import { store, type Tab } from '../stores/settings.svelte';
   import Switch from './Switch.svelte';
 
@@ -41,22 +41,59 @@
     {/each}
   </nav>
 
-  <!-- Bottom Service Status Card -->
-  <div class="p-3 rounded-lg border border-dark-border bg-dark-card flex items-center justify-between shadow-sm">
-    <div class="flex items-center gap-2">
-      <span
-        class="h-2 w-2 rounded-full"
-        class:bg-green-500={store.settings.service_enabled}
-        class:bg-amber-500={!store.settings.service_enabled}
-      ></span>
-      <span class="text-xs font-medium text-gray-200">
-        {store.settings.service_enabled ? 'Active' : 'Inactive'}
-      </span>
-    </div>
+  <!-- Bottom Section: Update Button & Service Switch -->
+  <div class="flex flex-col gap-2 mt-auto">
+    <!-- Manual Update Button (Above Active Switch) -->
+    <button
+      type="button"
+      onclick={() => store.checkForUpdates(true)}
+      disabled={store.isCheckingUpdate}
+      class="flex items-center justify-between w-full px-3 py-2 rounded-lg border border-dark-border bg-dark-card hover:bg-white/5 transition-all text-xs font-medium cursor-pointer disabled:opacity-60 disabled:cursor-wait"
+      title="Check GitHub for FileUC updates"
+    >
+      <div class="flex items-center gap-2 truncate">
+        <RefreshCw
+          size={13}
+          strokeWidth={2}
+          class="shrink-0 text-gray-400 {store.isCheckingUpdate ? 'animate-spin text-accent' : ''}"
+        />
+        <span class="truncate text-gray-300">
+          {#if store.isCheckingUpdate}
+            Checking...
+          {:else if store.updateStatusMessage}
+            {store.updateStatusMessage}
+          {:else if store.pendingUpdate}
+            Update Ready
+          {:else}
+            Check Updates
+          {/if}
+        </span>
+      </div>
 
-    <Switch
-      checked={store.settings.service_enabled}
-      onchange={(val) => store.toggleService(val)}
-    />
+      {#if store.pendingUpdate && !store.isCheckingUpdate}
+        <span class="h-2 w-2 rounded-full bg-accent animate-pulse shrink-0"></span>
+      {:else if store.updateStatusMessage === 'Up to date'}
+        <Check size={13} strokeWidth={2.5} class="text-green-400 shrink-0" />
+      {/if}
+    </button>
+
+    <!-- Bottom Service Status Card -->
+    <div class="p-3 rounded-lg border border-dark-border bg-dark-card flex items-center justify-between shadow-sm">
+      <div class="flex items-center gap-2">
+        <span
+          class="h-2 w-2 rounded-full"
+          class:bg-green-500={store.settings.service_enabled}
+          class:bg-amber-500={!store.settings.service_enabled}
+        ></span>
+        <span class="text-xs font-medium text-gray-200">
+          {store.settings.service_enabled ? 'Active' : 'Inactive'}
+        </span>
+      </div>
+
+      <Switch
+        checked={store.settings.service_enabled}
+        onchange={(val) => store.toggleService(val)}
+      />
+    </div>
   </div>
 </aside>

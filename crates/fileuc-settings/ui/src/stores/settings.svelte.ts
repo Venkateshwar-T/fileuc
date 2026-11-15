@@ -5,6 +5,20 @@ export type Tab = 'home' | 'plugins' | 'settings';
 export type ThemeChoice = 'Dark' | 'Light' | 'System';
 export type ModifierChoice = 'Ctrl' | 'Alt' | 'Shift';
 
+export interface PendingUpdate {
+  version: string;
+  release_url: string;
+  release_name: string | null;
+  download_url: string | null;
+}
+
+export interface UpdateCheckResponse {
+  status: 'update_available' | 'up_to_date' | 'offline' | 'error';
+  current_version: string;
+  update: PendingUpdate | null;
+  message: string | null;
+}
+
 export interface AppSettings {
   trigger_modifier: string;
   qr_shortcut: string;
@@ -16,6 +30,7 @@ export interface AppSettings {
   service_enabled: boolean;
   hud_style: string;
   output_mode: string;
+  pending_update?: PendingUpdate | null;
 }
 
 export interface PluginState {
@@ -59,6 +74,12 @@ export function createSettingsStore() {
 
   let uninstalledCount = $derived((ffmpeg.installed ? 0 : 1) + (docx.installed ? 0 : 1));
 
+  let pendingUpdate = $state<PendingUpdate | null>(null);
+  let bannerDismissed = $state<boolean>(false);
+  let isCheckingUpdate = $state<boolean>(false);
+  let updateStatusMessage = $state<string>('');
+  let currentAppVersion = $state<string>('0.1.0');
+
   async function applyTheme(theme: ThemeChoice) {
     if (theme === 'Light') {
       isDarkMode = false;
@@ -99,9 +120,79 @@ export function createSettingsStore() {
       if (data) {
         settings = data;
         await applyTheme(data.theme);
+        if (data.pending_update) {
+          pendingUpdate = data.pending_update;
+          bannerDismissed = false;
+        }
       }
     } catch {
       await applyTheme('System');
+    }
+
+    // Automatically check for updates on launch (force = false)
+    // If pendingUpdate was already set from disk, backend will instantly return it without hitting GitHub.
+    // If none was set, backend will check GitHub (offline resilient).
+    await checkForUpdates(false);
+  }
+
+  async function checkForUpdates(force = false) {
+    if (isCheckingUpdate) return;
+    isCheckingUpdate = true;
+    updateStatusMessage = '';
+    try {
+      const res = await invoke<UpdateCheckResponse>('check_for_updates', { force });
+      if (res) {
+        currentAppVersion = res.current_version;
+        if (res.status === 'update_available' && res.update) {
+          pendingUpdate = res.update;
+          bannerDismissed = false; // Show banner if an update is detected
+          updateStatusMessage = `v${res.update.version} available`;
+        } else if (res.status === 'up_to_date') {
+          pendingUpdate = null;
+          if (force) {
+            updateStatusMessage = 'Up to date';
+            setTimeout(() => {
+              if (updateStatusMessage === 'Up to date') updateStatusMessage = '';
+            }, 3500);
+          }
+        } else if (res.status === 'offline') {
+          if (force) {
+            updateStatusMessage = 'Offline';
+            setTimeout(() => {
+              if (updateStatusMessage === 'Offline') updateStatusMessage = '';
+            }, 3500);
+          }
+        } else if (force) {
+          updateStatusMessage = 'Check failed';
+          setTimeout(() => {
+            if (updateStatusMessage === 'Check failed') updateStatusMessage = '';
+          }, 3500);
+        }
+      }
+    } catch (e) {
+      console.warn('Update check failed:', e);
+      if (force) {
+        updateStatusMessage = 'Offline';
+        setTimeout(() => {
+          if (updateStatusMessage === 'Offline') updateStatusMessage = '';
+        }, 3500);
+      }
+    } finally {
+      isCheckingUpdate = false;
+    }
+  }
+
+  function dismissBanner() {
+    bannerDismissed = true;
+  }
+
+  async function openReleaseUrl(url?: string) {
+    const targetUrl = url || pendingUpdate?.download_url || pendingUpdate?.release_url;
+    if (!targetUrl) return;
+    try {
+      await invoke('open_release_url', { url: targetUrl });
+    } catch (e) {
+      console.warn('Failed to open release URL:', e);
     }
   }
 
@@ -197,6 +288,11 @@ export function createSettingsStore() {
     get ffmpeg() { return ffmpeg; },
     get docx() { return docx; },
     get uninstalledCount() { return uninstalledCount; },
+    get pendingUpdate() { return pendingUpdate; },
+    get bannerDismissed() { return bannerDismissed; },
+    get isCheckingUpdate() { return isCheckingUpdate; },
+    get updateStatusMessage() { return updateStatusMessage; },
+    get currentAppVersion() { return currentAppVersion; },
     loadSettings,
     saveSettings,
     toggleService,
@@ -205,6 +301,9 @@ export function createSettingsStore() {
     uninstallPlugin,
     initListeners,
     applyTheme,
+    checkForUpdates,
+    dismissBanner,
+    openReleaseUrl,
   };
 }
 

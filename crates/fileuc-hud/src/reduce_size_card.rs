@@ -5,7 +5,7 @@
 
 use crate::card_common::{
     draw_action_button, draw_card_body, draw_card_shadow, draw_close_button, draw_input_box,
-    draw_segmented_tabs, is_cursor_visible,
+    draw_segmented_tabs_ex, is_cursor_visible,
 };
 use crate::font::FontContext;
 use crate::spring::Spring;
@@ -22,6 +22,7 @@ pub struct ReduceSizeCardState {
     pub input_text: String,
     pub unit: SizeUnit,
     pub file_count: usize,
+    pub total_size_bytes: u64,
     pub pop_in: Spring,
     pub is_close_hovered: bool,
     pub is_submit_hovered: bool,
@@ -32,14 +33,22 @@ pub struct ReduceSizeCardState {
 }
 
 impl ReduceSizeCardState {
-    pub fn new(file_count: usize, dpi_scale: f32) -> Self {
+    pub fn new(file_count: usize, total_size_bytes: u64, dpi_scale: f32) -> Self {
         let mut pop_in = Spring::new(0.0, 750.0, 36.0);
         pop_in.set_target(1.0);
 
+        // If file is already in KB (< 1 MB), default to KB and disable MB
+        let unit = if total_size_bytes > 0 && total_size_bytes < 1024 * 1024 {
+            SizeUnit::Kb
+        } else {
+            SizeUnit::Mb
+        };
+
         Self {
             input_text: String::new(),
-            unit: SizeUnit::Mb,
+            unit,
             file_count,
+            total_size_bytes,
             pop_in,
             is_close_hovered: false,
             is_submit_hovered: false,
@@ -50,10 +59,49 @@ impl ReduceSizeCardState {
         }
     }
 
+    /// MB tab is disabled if the source file is already under 1 MB.
+    pub fn is_mb_disabled(&self) -> bool {
+        self.total_size_bytes > 0 && self.total_size_bytes < 1024 * 1024
+    }
+
+    /// Sets the unit, ignoring MB if disabled and clearing any oversized input.
+    pub fn set_unit(&mut self, unit: SizeUnit) {
+        if unit == SizeUnit::Mb && self.is_mb_disabled() {
+            return;
+        }
+        self.unit = unit;
+
+        // If the current input number in the new unit exceeds the original file size, clear it
+        if let Ok(num) = self.input_text.trim().parse::<u64>() {
+            let bytes = match self.unit {
+                SizeUnit::Mb => num.saturating_mul(1024 * 1024),
+                SizeUnit::Kb => num.saturating_mul(1024),
+            };
+            if self.total_size_bytes > 0 && bytes >= self.total_size_bytes {
+                self.input_text.clear();
+            }
+        }
+    }
+
     pub fn push_char(&mut self, ch: char) {
-        // Strictly allow only numbers
-        if ch.is_ascii_digit() && self.input_text.len() < 8 {
-            self.input_text.push(ch);
+        // Strictly allow only numbers and max length 8
+        if !ch.is_ascii_digit() || self.input_text.len() >= 8 {
+            return;
+        }
+
+        let tentative = format!("{}{}", self.input_text, ch);
+        if let Ok(num) = tentative.parse::<u64>() {
+            let tentative_bytes = match self.unit {
+                SizeUnit::Mb => num.saturating_mul(1024 * 1024),
+                SizeUnit::Kb => num.saturating_mul(1024),
+            };
+
+            // Strict rule: user cannot enter a number greater than or equal to current size
+            if self.total_size_bytes > 0 && tentative_bytes >= self.total_size_bytes {
+                return; // Keystroke rejected!
+            }
+
+            self.input_text = tentative;
         }
     }
 
@@ -70,15 +118,26 @@ impl ReduceSizeCardState {
         if num == 0 {
             return None;
         }
-        match self.unit {
-            SizeUnit::Mb => Some(num * 1024 * 1024),
-            SizeUnit::Kb => Some(num * 1024),
+        let bytes = match self.unit {
+            SizeUnit::Mb => num.saturating_mul(1024 * 1024),
+            SizeUnit::Kb => num.saturating_mul(1024),
+        };
+        if self.total_size_bytes > 0 && bytes >= self.total_size_bytes {
+            return None;
+        }
+        Some(bytes)
+    }
+
+    pub fn is_valid_submission(&self) -> bool {
+        match self.target_bytes() {
+            Some(b) => b > 0 && (self.total_size_bytes == 0 || b < self.total_size_bytes),
+            None => false,
         }
     }
 
     pub fn card_bounds(&self, center_x: f32, center_y: f32) -> (f32, f32, f32, f32) {
         let w = 260.0 * self.dpi_scale;
-        let h = 216.0 * self.dpi_scale;
+        let h = 236.0 * self.dpi_scale;
         (center_x - w / 2.0, center_y - h / 2.0, w, h)
     }
 
@@ -121,7 +180,11 @@ impl ReduceSizeCardState {
 
         if px >= tab_left && px <= tab_left + tab_w && py >= tabs_y && py <= tabs_y + tab_h {
             if px < cx {
-                Some(SizeUnit::Mb)
+                if self.is_mb_disabled() {
+                    None // MB is disabled!
+                } else {
+                    Some(SizeUnit::Mb)
+                }
             } else {
                 Some(SizeUnit::Kb)
             }
@@ -135,7 +198,7 @@ impl ReduceSizeCardState {
         let btn_h = 40.0 * self.dpi_scale;
         let btn_w = 216.0 * self.dpi_scale;
         let btn_x = cx - btn_w / 2.0;
-        let btn_y = t + 154.0 * self.dpi_scale;
+        let btn_y = t + 174.0 * self.dpi_scale;
         let px = cx + rel_x;
         let py = cy + rel_y;
 
@@ -161,7 +224,7 @@ pub fn render_reduce_size_card(
     let dpi = state.dpi_scale;
 
     let base_w = 260.0 * dpi;
-    let base_h = 216.0 * dpi;
+    let base_h = 236.0 * dpi;
     let half_w = (base_w / 2.0) * scale;
     let half_h = (base_h / 2.0) * scale;
     let left = cx - half_w;
@@ -203,7 +266,7 @@ pub fn render_reduce_size_card(
         false,
     );
 
-    // 5. Segmented Mode Switcher Tabs [ MB | KB ] (Centered, matching LOCAL | INTERNET)
+    // 5. Segmented Mode Switcher Tabs [ MB | KB ]
     let tab_w = 140.0 * dpi * scale;
     let tab_h = 30.0 * dpi * scale;
     let tab_left = cx - tab_w / 2.0;
@@ -218,7 +281,9 @@ pub fn render_reduce_size_card(
         SizeUnit::Kb => 1,
     });
 
-    draw_segmented_tabs(
+    let disabled_indices: &[usize] = if state.is_mb_disabled() { &[0] } else { &[] };
+
+    draw_segmented_tabs_ex(
         pixmap,
         tab_left,
         tabs_y,
@@ -227,16 +292,44 @@ pub fn render_reduce_size_card(
         &["MB", "KB"],
         active_idx,
         hovered_idx,
+        disabled_indices,
         scale,
         dpi,
         theme,
         fonts,
     );
 
-    // 6. Number-only Input Field (Height 40px, 8.0px rounded corners, 10px gap from tabs)
-    let input_y = top + 104.0 * dpi * scale;
+    // 6. Current File Size Display (Under Tabs for UX)
+    let formatted_current = if state.total_size_bytes == 0 {
+        "Current size: Unknown".to_string()
+    } else if state.total_size_bytes < 1024 {
+        format!("Current size: {} B", state.total_size_bytes)
+    } else if state.total_size_bytes < 1024 * 1024 {
+        let kb = state.total_size_bytes as f64 / 1024.0;
+        if kb < 10.0 {
+            format!("Current size: {:.1} KB", kb)
+        } else {
+            format!("Current size: {:.0} KB", kb)
+        }
+    } else {
+        let mb = state.total_size_bytes as f64 / (1024.0 * 1024.0);
+        format!("Current size: {:.1} MB", mb)
+    };
+
+    fonts.draw_text_centered(
+        pixmap,
+        &formatted_current,
+        cx,
+        top + 104.0 * dpi * scale,
+        12.0 * dpi * scale,
+        theme.text_secondary,
+        false,
+    );
+
+    // 7. Number-only Input Field
+    let input_y = top + 120.0 * dpi * scale;
     let input_w = 216.0 * dpi * scale;
-    let input_h = 40.0 * dpi * scale;
+    let input_h = 38.0 * dpi * scale;
     let input_x = cx - input_w / 2.0;
     let in_corner_r = 8.0 * dpi * scale;
 
@@ -248,7 +341,7 @@ pub fn render_reduce_size_card(
     if state.input_text.is_empty() {
         let placeholder = match state.unit {
             SizeUnit::Mb => "e.g. 2 (MB)",
-            SizeUnit::Kb => "e.g. 500 (KB)",
+            SizeUnit::Kb => "e.g. 200 (KB)",
         };
         fonts.draw_text_centered(
             pixmap,
@@ -292,13 +385,13 @@ pub fn render_reduce_size_card(
         }
     }
 
-    // 7. Action Button [ Reduce Size ] (Height 40px, 10px gap from input)
-    let btn_y = top + 154.0 * dpi * scale;
+    // 8. Action Button [ Reduce Size ]
+    let btn_y = top + 174.0 * dpi * scale;
     let btn_w = 216.0 * dpi * scale;
     let btn_h = 40.0 * dpi * scale;
     let btn_x = cx - btn_w / 2.0;
     let btn_corner_r = 8.0 * dpi * scale;
-    let has_valid_number = state.target_bytes().is_some();
+    let has_valid_number = state.is_valid_submission();
 
     draw_action_button(
         pixmap,

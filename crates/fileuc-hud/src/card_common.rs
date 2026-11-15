@@ -153,6 +153,53 @@ pub fn draw_close_button(
     }
 }
 
+/// Renders a clean vector stroke minimize button (horizontal bar '—') with circular hover highlight.
+pub fn draw_minimize_button(
+    pixmap: &mut Pixmap,
+    cx: f32,
+    cy: f32,
+    is_hovered: bool,
+    scale: f32,
+    dpi: f32,
+    theme: &Theme,
+) {
+    if is_hovered {
+        let hover_r = 14.0 * dpi * scale;
+        let mut hover_pb = PathBuilder::new();
+        hover_pb.push_circle(cx, cy, hover_r);
+        if let Some(hover_path) = hover_pb.finish() {
+            let mut hover_paint = Paint::default();
+            if theme.is_dark {
+                hover_paint.set_color_rgba8(255, 255, 255, 24);
+            } else {
+                hover_paint.set_color_rgba8(0, 0, 0, 18);
+            }
+            hover_paint.anti_alias = true;
+            pixmap.fill_path(&hover_path, &hover_paint, FillRule::Winding, Transform::identity(), None);
+        }
+    }
+
+    let min_half = 5.0 * dpi * scale;
+    let mut min_pb = PathBuilder::new();
+    min_pb.move_to(cx - min_half, cy);
+    min_pb.line_to(cx + min_half, cy);
+    if let Some(min_path) = min_pb.finish() {
+        let mut min_paint = Paint::default();
+        min_paint.set_color(if is_hovered {
+            theme.text_primary
+        } else {
+            theme.text_secondary
+        });
+        min_paint.anti_alias = true;
+        let stroke = Stroke {
+            width: 1.8 * dpi * scale,
+            line_cap: LineCap::Round,
+            ..Default::default()
+        };
+        pixmap.stroke_path(&min_path, &min_paint, &stroke, Transform::identity(), None);
+    }
+}
+
 /// Renders a segmented pill tab bar with rounded container and active pill.
 pub fn draw_segmented_tabs(
     pixmap: &mut Pixmap,
@@ -163,6 +210,39 @@ pub fn draw_segmented_tabs(
     labels: &[&str],
     active_idx: usize,
     hovered_idx: Option<usize>,
+    scale: f32,
+    dpi: f32,
+    theme: &Theme,
+    fonts: &FontContext,
+) {
+    draw_segmented_tabs_ex(
+        pixmap,
+        tab_left,
+        tab_top,
+        tab_w,
+        tab_h,
+        labels,
+        active_idx,
+        hovered_idx,
+        &[],
+        scale,
+        dpi,
+        theme,
+        fonts,
+    );
+}
+
+/// Renders a segmented pill tab bar with optional disabled tabs.
+pub fn draw_segmented_tabs_ex(
+    pixmap: &mut Pixmap,
+    tab_left: f32,
+    tab_top: f32,
+    tab_w: f32,
+    tab_h: f32,
+    labels: &[&str],
+    active_idx: usize,
+    hovered_idx: Option<usize>,
+    disabled_indices: &[usize],
     scale: f32,
     dpi: f32,
     theme: &Theme,
@@ -196,8 +276,9 @@ pub fn draw_segmented_tabs(
 
     for (i, label) in labels.iter().enumerate() {
         let seg_left = tab_left + (i as f32) * seg_w;
-        let is_active = i == active_idx;
-        let is_hov = hovered_idx == Some(i) && !is_active;
+        let is_disabled = disabled_indices.contains(&i);
+        let is_active = i == active_idx && !is_disabled;
+        let is_hov = hovered_idx == Some(i) && !is_active && !is_disabled;
 
         if is_active {
             let mut active_pb = PathBuilder::new();
@@ -237,7 +318,13 @@ pub fn draw_segmented_tabs(
             }
         }
 
-        let txt_color = if is_active {
+        let txt_color = if is_disabled {
+            if theme.is_dark {
+                Color::from_rgba8(90, 90, 96, 255)
+            } else {
+                Color::from_rgba8(175, 175, 180, 255)
+            }
+        } else if is_active {
             Color::WHITE
         } else {
             theme.text_secondary

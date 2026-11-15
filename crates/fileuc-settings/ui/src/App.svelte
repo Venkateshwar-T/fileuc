@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { store } from './stores/settings.svelte';
   import Sidebar from './components/Sidebar.svelte';
+  import UpdateBanner from './components/UpdateBanner.svelte';
   import TabHome from './tabs/TabHome.svelte';
   import TabPlugins from './tabs/TabPlugins.svelte';
   import TabSettings from './tabs/TabSettings.svelte';
@@ -20,6 +21,8 @@
   <!-- Main Scrollable Content Area -->
   <main class="flex-1 h-full overflow-y-auto px-6 py-6">
     <div class="max-w-2xl mx-auto pb-6">
+      <UpdateBanner />
+
       {#if store.activeTab === 'home'}
         <TabHome />
       {:else if store.activeTab === 'plugins'}

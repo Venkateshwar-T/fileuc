@@ -1,6 +1,7 @@
 use crate::drop_target::{DropTargetEvent, FileDropTarget};
 use crate::surface::BlitSurface;
 use std::sync::mpsc::Sender;
+use std::sync::Mutex;
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
@@ -11,14 +12,16 @@ use windows::Win32::System::Ole::{OleInitialize, OleUninitialize, RegisterDragDr
 use windows::Win32::UI::HiDpi::{GetDpiForSystem, GetDpiForWindow};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, RegisterClassW, SetWindowPos, ShowWindow,
-    CS_HREDRAW, CS_VREDRAW, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE,
-    SW_SHOWNOACTIVATE, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    CS_HREDRAW, CS_VREDRAW, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+    SW_HIDE, SW_SHOWNOACTIVATE, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
     WS_EX_TOPMOST, WS_POPUP,
 };
 
 const WINDOW_CLASS_NAME: PCWSTR = w!("FileUC_HudWindow");
 
 pub const BASE_SIDE_DIP: f32 = 480.0; // Ample canvas space for 150px outer radius donut, sub-slices fan, 380px modal cards, and outer slice badges
+
+static HUD_EVENT_TX: Mutex<Option<Sender<DropTargetEvent>>> = Mutex::new(None);
 
 unsafe extern "system" fn hud_wnd_proc(
     hwnd: HWND,
@@ -75,9 +78,13 @@ impl HudWindow {
                 None,
             )?;
 
-            let drop_target = FileDropTarget::new(hwnd, event_sender);
+            let drop_target = FileDropTarget::new(hwnd, event_sender.clone());
             let idrop: windows::Win32::System::Ole::IDropTarget = drop_target.into();
             RegisterDragDrop(hwnd, &idrop)?;
+
+            if let Ok(mut guard) = HUD_EVENT_TX.lock() {
+                *guard = Some(event_sender);
+            }
 
             Ok(Self {
                 hwnd,
@@ -232,11 +239,43 @@ impl HudWindow {
         self.surface
             .blit_to_layered_window(self.hwnd, self.screen_x, self.screen_y);
     }
+
+    pub fn screen_x(&self) -> i32 {
+        self.screen_x
+    }
+
+    pub fn screen_y(&self) -> i32 {
+        self.screen_y
+    }
+
+    pub fn move_to(&mut self, new_screen_x: i32, new_screen_y: i32) -> (i32, i32) {
+        self.screen_x = new_screen_x;
+        self.screen_y = new_screen_y;
+        self.center_x = self.screen_x + (self.size as i32 / 2);
+        self.center_y = self.screen_y + (self.size as i32 / 2);
+
+        unsafe {
+            let _ = SetWindowPos(
+                self.hwnd,
+                HWND_TOPMOST,
+                self.screen_x,
+                self.screen_y,
+                0,
+                0,
+                SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER,
+            );
+        }
+
+        (self.center_x, self.center_y)
+    }
 }
 
 impl Drop for HudWindow {
     fn drop(&mut self) {
         unsafe {
+            if let Ok(mut guard) = HUD_EVENT_TX.lock() {
+                *guard = None;
+            }
             let _ = RevokeDragDrop(self.hwnd);
             let _ = DestroyWindow(self.hwnd);
             OleUninitialize();

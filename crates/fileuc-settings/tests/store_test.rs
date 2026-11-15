@@ -42,3 +42,51 @@ fn corrupt_file_returns_defaults() {
     let s = store.load();
     assert_eq!(s.trigger_modifier, "Ctrl"); // defaults
 }
+
+#[test]
+fn pending_update_persists_when_newer() {
+    use fileuc_settings::updater::PendingUpdate;
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("settings.json");
+    let store = SettingsStore::new(path.clone());
+    let mut s = store.load();
+    s.pending_update = Some(PendingUpdate {
+        version: "99.0.0".to_string(),
+        release_url: "https://github.com/Venkateshwar-T/fileuc/releases/tag/v99.0.0".to_string(),
+        release_name: Some("FileUC v99.0.0".to_string()),
+        download_url: Some("https://github.com/Venkateshwar-T/fileuc/releases/download/v99.0.0/FileUC-Setup.exe".to_string()),
+    });
+    store.save(&s).unwrap();
+
+    let store2 = SettingsStore::new(path);
+    let loaded = store2.load();
+    assert!(loaded.pending_update.is_some());
+    assert_eq!(loaded.pending_update.unwrap().version, "99.0.0");
+}
+
+#[test]
+fn pending_update_cleared_when_current_or_older() {
+    use fileuc_settings::updater::PendingUpdate;
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("settings.json");
+    let store = SettingsStore::new(path.clone());
+    let mut s = store.load();
+    // 0.0.1 is older than current version (0.1.0)
+    s.pending_update = Some(PendingUpdate {
+        version: "0.0.1".to_string(),
+        release_url: "https://github.com/Venkateshwar-T/fileuc/releases/tag/v0.0.1".to_string(),
+        release_name: Some("FileUC v0.0.1".to_string()),
+        download_url: None,
+    });
+    store.save(&s).unwrap();
+
+    let store2 = SettingsStore::new(path.clone());
+    let loaded = store2.load();
+    // Must be automatically cleared on load
+    assert!(loaded.pending_update.is_none());
+
+    // File should also have been updated to None
+    let store3 = SettingsStore::new(path);
+    let loaded3 = store3.load();
+    assert!(loaded3.pending_update.is_none());
+}

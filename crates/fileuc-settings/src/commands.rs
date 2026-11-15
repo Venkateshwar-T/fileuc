@@ -144,3 +144,13 @@ pub fn uninstall_plugin(name: String) -> Result<(), String> {
     }
     Ok(())
 }
+
+#[tauri::command]
+pub fn check_for_updates(force: bool) -> Result<crate::updater::UpdateCheckResponse, String> {
+    Ok(crate::updater::check_for_updates_internal(force))
+}
+
+#[tauri::command]
+pub fn open_release_url(url: String) -> Result<(), String> {
+    crate::updater::open_url_in_browser(&url)
+}

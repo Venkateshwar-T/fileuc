@@ -11,9 +11,10 @@ use windows::Win32::UI::Shell::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AllowSetForegroundWindow, AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
-    DestroyMenu, DestroyWindow, GetCursorPos, LoadIconW, PostMessageW, RegisterClassW,
-    SetForegroundWindow, SetMenuDefaultItem, TrackPopupMenu, IDI_APPLICATION, MF_SEPARATOR,
-    MF_STRING, TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RETURNCMD, WINDOW_EX_STYLE, WM_CONTEXTMENU,
+    DestroyMenu, DestroyWindow, GetCursorPos, GetSystemMetrics, LoadIconW, LoadImageW, PostMessageW,
+    RegisterClassW, SetForegroundWindow, SetMenuDefaultItem, TrackPopupMenu, HICON, IDI_APPLICATION,
+    IMAGE_ICON, LR_DEFAULTCOLOR, LR_LOADFROMFILE, MF_SEPARATOR, MF_STRING, SM_CXSMICON,
+    SM_CYSMICON, TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RETURNCMD, WINDOW_EX_STYLE, WM_CONTEXTMENU,
     WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_NULL, WM_RBUTTONDOWN, WM_RBUTTONUP,
     WM_USER, WNDCLASSW, WS_OVERLAPPED,
 };
@@ -154,6 +155,59 @@ pub unsafe fn show_tray_menu(hwnd: HWND) -> Option<u32> {
     }
 }
 
+pub unsafe fn load_app_icon(hinstance: HINSTANCE) -> HICON {
+    let cx = GetSystemMetrics(SM_CXSMICON);
+    let cy = GetSystemMetrics(SM_CYSMICON);
+
+    // 1. Try resource ID 32512 (IDI_APPLICATION embedded by tauri-build/MSVC)
+    if let Ok(handle) = LoadImageW(hinstance, PCWSTR(32512 as *const u16), IMAGE_ICON, cx, cy, LR_DEFAULTCOLOR) {
+        if !handle.is_invalid() {
+            return HICON(handle.0);
+        }
+    }
+
+    // 2. Try resource ID 1 (embedded by winres / MinGW)
+    if let Ok(handle) = LoadImageW(hinstance, PCWSTR(1 as *const u16), IMAGE_ICON, cx, cy, LR_DEFAULTCOLOR) {
+        if !handle.is_invalid() {
+            return HICON(handle.0);
+        }
+    }
+
+    // 3. Fallback: check next to current executable
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(parent) = exe_path.parent() {
+            let direct_ico = parent.join("icon.ico");
+            if direct_ico.exists() {
+                let wide: Vec<u16> = direct_ico.to_string_lossy().encode_utf16().chain(std::iter::once(0)).collect();
+                if let Ok(handle) = LoadImageW(None, PCWSTR(wide.as_ptr()), IMAGE_ICON, cx, cy, LR_LOADFROMFILE | LR_DEFAULTCOLOR) {
+                    if !handle.is_invalid() {
+                        return HICON(handle.0);
+                    }
+                }
+            }
+        }
+    }
+
+    // 4. Fallback: check relative assets directory in development
+    for rel_path in &["crates/fileuc-daemon/icon.ico", "assets/icon.ico", "icon.ico"] {
+        let p = std::path::Path::new(rel_path);
+        if p.exists() {
+            let wide: Vec<u16> = p.to_string_lossy().encode_utf16().chain(std::iter::once(0)).collect();
+            if let Ok(handle) = LoadImageW(None, PCWSTR(wide.as_ptr()), IMAGE_ICON, cx, cy, LR_LOADFROMFILE | LR_DEFAULTCOLOR) {
+                if !handle.is_invalid() {
+                    return HICON(handle.0);
+                }
+            }
+        }
+    }
+
+    // 5. Fallback to LoadIconW on module
+    LoadIconW(hinstance, PCWSTR(32512 as *const u16))
+        .or_else(|_| LoadIconW(hinstance, PCWSTR(1 as *const u16)))
+        .or_else(|_| LoadIconW(None, IDI_APPLICATION))
+        .unwrap_or_default()
+}
+
 pub struct TrayIcon {
     hwnd: HWND,
     nid: NOTIFYICONDATAW,
@@ -193,9 +247,7 @@ impl TrayIcon {
             )
             .unwrap_or_default();
 
-            let h_icon = LoadIconW(h_instance, PCWSTR(1 as *const u16))
-                .or_else(|_| LoadIconW(None, IDI_APPLICATION))
-                .unwrap_or_default();
+            let h_icon = load_app_icon(h_instance);
 
             let mut nid = NOTIFYICONDATAW {
                 cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,

@@ -73,6 +73,10 @@ impl DonutState {
     }
 
     pub fn is_plugin_missing(&self, action: ConversionAction) -> bool {
+        if action == ConversionAction::OfficeGroup {
+            return self.missing_plugins.contains(&ConversionAction::OfficeGroup)
+                || self.missing_plugins.contains(&ConversionAction::PdfToDocx);
+        }
         self.missing_plugins.contains(&action)
     }
 
@@ -695,15 +699,65 @@ pub fn render_donut(
                             } else {
                                 theme.text_primary
                             };
-                            fonts.draw_text_centered(
-                                pixmap,
-                                child_act.label(),
-                                lx,
-                                ly,
-                                18.5 * dpi_scale,
-                                label_color,
-                                true,
-                            );
+
+                            let is_missing = state.is_plugin_missing(*child_act);
+                            let font_size = 18.5 * dpi_scale;
+
+                            if is_missing {
+                                let label = child_act.label();
+                                let text_w = fonts.measure_text(label, font_size, true);
+                                let arrow_w = 8.0 * dpi_scale;
+                                let gap = 5.0 * dpi_scale;
+                                let total_w = text_w + gap + arrow_w;
+
+                                let text_cx = lx - (total_w / 2.0) + (text_w / 2.0);
+                                fonts.draw_text_centered(
+                                    pixmap,
+                                    label,
+                                    text_cx,
+                                    ly,
+                                    font_size,
+                                    label_color,
+                                    true,
+                                );
+
+                                let ar_x = lx + (total_w / 2.0) - (arrow_w / 2.0);
+                                let ar_y = ly;
+                                let stem_top = ar_y - 5.5 * dpi_scale;
+                                let stem_bot = ar_y + 5.5 * dpi_scale;
+                                let wing_dx = 3.8 * dpi_scale;
+                                let wing_dy = 3.8 * dpi_scale;
+
+                                let mut ar_pb = PathBuilder::new();
+                                ar_pb.move_to(ar_x, stem_top);
+                                ar_pb.line_to(ar_x, stem_bot);
+                                ar_pb.move_to(ar_x - wing_dx, stem_bot - wing_dy);
+                                ar_pb.line_to(ar_x, stem_bot);
+                                ar_pb.line_to(ar_x + wing_dx, stem_bot - wing_dy);
+
+                                if let Some(ar_path) = ar_pb.finish() {
+                                    let mut ar_paint = Paint::default();
+                                    ar_paint.set_color(label_color);
+                                    ar_paint.anti_alias = true;
+                                    let stroke = Stroke {
+                                        width: 2.0 * dpi_scale,
+                                        line_cap: LineCap::Round,
+                                        line_join: LineJoin::Round,
+                                        ..Default::default()
+                                    };
+                                    pixmap.stroke_path(&ar_path, &ar_paint, &stroke, Transform::identity(), None);
+                                }
+                            } else {
+                                fonts.draw_text_centered(
+                                    pixmap,
+                                    child_act.label(),
+                                    lx,
+                                    ly,
+                                    font_size,
+                                    label_color,
+                                    true,
+                                );
+                            }
                         }
                     }
                 }
@@ -770,7 +824,25 @@ pub fn render_donut(
         };
 
         let is_hovered_missing = if ch <= 0.4 {
-            if let Some(idx) = state.hovered_slice {
+            if let Some(sub_idx) = state.sub_hover {
+                if let Some(group_idx) = state.expanded_group {
+                    if let Some(action) = state.actions.get(group_idx) {
+                        if let Some(children) = crate::smart_filter::get_action_children(*action) {
+                            if let Some(child_act) = children.get(sub_idx) {
+                                state.is_plugin_missing(*child_act)
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            } else if let Some(idx) = state.hovered_slice {
                 if let Some(action) = state.actions.get(idx) {
                     state.is_plugin_missing(*action)
                 } else {
@@ -785,6 +857,24 @@ pub fn render_donut(
 
         let subtitle = if ch > 0.4 {
             "Cancel".to_string()
+        } else if let Some(sub_idx) = state.sub_hover {
+            if let Some(group_idx) = state.expanded_group {
+                if let Some(action) = state.actions.get(group_idx) {
+                    if let Some(children) = crate::smart_filter::get_action_children(*action) {
+                        if let Some(child_act) = children.get(sub_idx) {
+                            child_act.center_prompt().to_string()
+                        } else {
+                            "Drop to Convert".to_string()
+                        }
+                    } else {
+                        "Drop to Convert".to_string()
+                    }
+                } else {
+                    "Drop to Convert".to_string()
+                }
+            } else {
+                "Drop to Convert".to_string()
+            }
         } else if let Some(idx) = state.hovered_slice {
             if let Some(action) = state.actions.get(idx) {
                 action.center_prompt().to_string()
@@ -951,6 +1041,13 @@ fn wrap_failure_message(fonts: &FontContext, msg: &str, font_size: f32, max_w: f
         lines.push("Conversion failed".to_string());
     }
     lines
+}
+
+/// Hit-tests whether a click relative to the HUD center hits the progress plate (allowing dragging).
+pub fn hit_test_progress(rel_x: f32, rel_y: f32, dpi_scale: f32) -> bool {
+    let half_w = 70.0 * dpi_scale;
+    let half_h = 70.0 * dpi_scale;
+    rel_x.abs() <= half_w && rel_y.abs() <= half_h
 }
 
 pub fn render_progress(

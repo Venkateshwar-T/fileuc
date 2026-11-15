@@ -2,7 +2,10 @@
 //! Renders an elegant, zero-friction transition card when files are dropped on "Share (Mobile)".
 //! Supports switchable [LOCAL | INTERNET] tabs with automatic secure internet tunneling.
 
-use crate::card_common::{draw_card_body, draw_card_shadow, draw_close_button, draw_segmented_tabs, push_rounded_rect};
+use crate::card_common::{
+    draw_card_body, draw_card_shadow, draw_close_button, draw_segmented_tabs,
+    push_rounded_rect,
+};
 use crate::font::FontContext;
 use crate::qr_encode::QrCode;
 use crate::spring::Spring;
@@ -48,6 +51,8 @@ pub struct QrCardState {
     pub session_start: Instant,
     pub scanned_time: Option<Instant>,
     pub is_close_hovered: bool,
+    pub is_copy_hovered: bool,
+    pub copy_feedback_timer: Option<Instant>,
     pub dpi_scale: f32,
 }
 
@@ -83,6 +88,8 @@ impl QrCardState {
             session_start: Instant::now(),
             scanned_time: None,
             is_close_hovered: false,
+            is_copy_hovered: false,
+            copy_feedback_timer: None,
             dpi_scale: if dpi_scale <= 0.0 { 1.0 } else { dpi_scale },
         })
     }
@@ -175,12 +182,20 @@ impl QrCardState {
         if self.is_connecting_tunnel {
             animating = true;
         }
+        if let Some(t) = self.copy_feedback_timer {
+            if t.elapsed().as_secs_f32() < 2.0 {
+                animating = true;
+            } else {
+                self.copy_feedback_timer = None;
+                animating = true;
+            }
+        }
         animating
     }
 
     pub fn card_bounds(&self, cx: f32, cy: f32) -> (f32, f32, f32, f32) {
         let card_w = 290.0 * self.dpi_scale;
-        let card_h = 356.0 * self.dpi_scale;
+        let card_h = 400.0 * self.dpi_scale;
         let left = cx - card_w / 2.0;
         let top = cy - card_h / 2.0;
         (left, top, card_w, card_h)
@@ -194,6 +209,39 @@ impl QrCardState {
         let dx = (cx + rel_x) - btn_cx;
         let dy = (cy + rel_y) - btn_cy;
         (dx * dx + dy * dy) <= (hit_radius * hit_radius)
+    }
+
+    pub fn hit_test_copy_btn(&self, rel_x: f32, rel_y: f32, cx: f32, cy: f32) -> bool {
+        let show_qr_pad = self.tab == QrShareTab::Local
+            || (self.tab == QrShareTab::Internet && self.is_cloudflared_installed && !self.is_connecting_tunnel && self.internet_url.is_some());
+        if !show_qr_pad {
+            return false;
+        }
+        let scale = self.pop_in.value();
+        let dpi = self.dpi_scale;
+        let (_, top, _, _) = self.card_bounds(cx, cy);
+        let tabs_y = top + 64.0 * dpi * scale;
+        let tab_h = 32.0 * dpi * scale;
+        let pad_size = 176.0 * dpi * scale;
+        let pad_top = tabs_y + tab_h + 10.0 * dpi * scale;
+        let status_y = pad_top + pad_size + 18.0 * dpi * scale;
+        let instruction_y = status_y + 18.0 * dpi * scale;
+
+        let btn_w = 210.0 * dpi * scale;
+        let btn_h = 32.0 * dpi * scale;
+        let btn_left = cx - btn_w / 2.0;
+        let btn_top = instruction_y + 14.0 * dpi * scale;
+
+        let px = cx + rel_x;
+        let py = cy + rel_y;
+        px >= btn_left && px <= btn_left + btn_w && py >= btn_top && py <= btn_top + btn_h
+    }
+
+    pub fn current_share_url(&self) -> Option<&str> {
+        match self.tab {
+            QrShareTab::Local => Some(&self.local_url),
+            QrShareTab::Internet => self.internet_url.as_deref(),
+        }
     }
 
     pub fn hit_test_tab(&self, rel_x: f32, rel_y: f32, cx: f32, cy: f32) -> Option<QrShareTab> {
@@ -287,7 +335,7 @@ pub fn render_qr_card(
     let dpi = state.dpi_scale;
 
     let base_w = 290.0 * dpi;
-    let base_h = 356.0 * dpi;
+    let base_h = 400.0 * dpi;
     let half_w = (base_w / 2.0) * scale;
     let half_h = (base_h / 2.0) * scale;
     let left = cx - half_w;
@@ -712,5 +760,154 @@ pub fn render_qr_card(
                 );
             }
         }
+
+        // 9. "Copy Link" Action Button
+        let copy_btn_w = 210.0 * dpi * scale;
+        let copy_btn_h = 32.0 * dpi * scale;
+        let copy_btn_left = cx - copy_btn_w / 2.0;
+        let copy_btn_top = instruction_y + 14.0 * dpi * scale;
+        let copy_btn_r = 8.0 * dpi * scale;
+
+        let is_feedback = state.copy_feedback_timer
+            .map(|t| t.elapsed().as_secs_f32() < 2.0)
+            .unwrap_or(false);
+
+        let is_generating = state.tab == QrShareTab::Internet
+            && (state.is_connecting_tunnel || state.internet_url.is_none());
+
+        let mut copy_btn_pb = PathBuilder::new();
+        push_rounded_rect(&mut copy_btn_pb, copy_btn_left, copy_btn_top, copy_btn_w, copy_btn_h, copy_btn_r);
+        if let Some(btn_path) = copy_btn_pb.finish() {
+            let mut btn_paint = Paint::default();
+            btn_paint.anti_alias = true;
+
+            if is_feedback {
+                btn_paint.set_color_rgba8(34, 197, 94, 255);
+                pixmap.fill_path(&btn_path, &btn_paint, FillRule::Winding, Transform::identity(), None);
+            } else if is_generating {
+                if theme.is_dark {
+                    btn_paint.set_color_rgba8(40, 40, 44, 255);
+                } else {
+                    btn_paint.set_color_rgba8(240, 240, 244, 255);
+                }
+                pixmap.fill_path(&btn_path, &btn_paint, FillRule::Winding, Transform::identity(), None);
+            } else if state.is_copy_hovered {
+                if theme.is_dark {
+                    btn_paint.set_color_rgba8(55, 55, 62, 255);
+                } else {
+                    btn_paint.set_color_rgba8(230, 230, 236, 255);
+                }
+                pixmap.fill_path(&btn_path, &btn_paint, FillRule::Winding, Transform::identity(), None);
+            } else {
+                if theme.is_dark {
+                    btn_paint.set_color_rgba8(35, 35, 38, 255);
+                } else {
+                    btn_paint.set_color_rgba8(245, 245, 248, 255);
+                }
+                pixmap.fill_path(&btn_path, &btn_paint, FillRule::Winding, Transform::identity(), None);
+            }
+
+            let mut border_paint = Paint::default();
+            border_paint.anti_alias = true;
+            if is_feedback {
+                border_paint.set_color_rgba8(34, 197, 94, 255);
+            } else {
+                border_paint.set_color(theme.border_subtle);
+            }
+            let border_stroke = Stroke {
+                width: 1.0 * dpi * scale,
+                ..Default::default()
+            };
+            pixmap.stroke_path(&btn_path, &border_paint, &border_stroke, Transform::identity(), None);
+
+            let label_y = copy_btn_top + copy_btn_h / 2.0;
+            if is_feedback {
+                fonts.draw_text_centered(
+                    pixmap,
+                    "Copied to Clipboard!",
+                    cx,
+                    label_y,
+                    13.0 * dpi * scale,
+                    Color::from_rgba8(255, 255, 255, 255),
+                    true,
+                );
+            } else if is_generating {
+                fonts.draw_text_centered(
+                    pixmap,
+                    "Generating Link...",
+                    cx,
+                    label_y,
+                    13.0 * dpi * scale,
+                    theme.text_secondary,
+                    false,
+                );
+            } else {
+                fonts.draw_text_centered(
+                    pixmap,
+                    "Copy Link",
+                    cx,
+                    label_y,
+                    13.0 * dpi * scale,
+                    theme.text_primary,
+                    true,
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_qr_card_close_hit_testing() {
+        let card = QrCardState::new("http://192.168.1.100:8080/share/abc", "test.mp4", 1024, 1.0).unwrap();
+        let cx = 240.0;
+        let cy = 240.0;
+        let (left, top, w, _) = card.card_bounds(cx, cy);
+
+        let close_rel_x = (left + w - 24.0) - cx;
+        let close_rel_y = (top + 24.0) - cy;
+        assert!(card.hit_test_close(close_rel_x, close_rel_y, cx, cy));
+
+        let other_rel_x = (left + w - 54.0) - cx;
+        let other_rel_y = (top + 24.0) - cy;
+        assert!(!card.hit_test_close(other_rel_x, other_rel_y, cx, cy));
+    }
+
+    #[test]
+    fn test_qr_card_copy_button_hit_testing_and_url() {
+        let mut card = QrCardState::new("http://192.168.1.100:8080/share/abc", "test.mp4", 1024, 1.0).unwrap();
+        assert_eq!(card.current_share_url(), Some("http://192.168.1.100:8080/share/abc"));
+
+        let cx = 240.0;
+        let cy = 240.0;
+
+        // In Local tab, hit testing copy button at center of button
+        let scale = card.pop_in.value();
+        let (_, top, _, _) = card.card_bounds(cx, cy);
+        let tabs_y = top + 64.0 * scale;
+        let tab_h = 32.0 * scale;
+        let pad_size = 176.0 * scale;
+        let pad_top = tabs_y + tab_h + 10.0 * scale;
+        let status_y = pad_top + pad_size + 18.0 * scale;
+        let instruction_y = status_y + 18.0 * scale;
+        let btn_top = instruction_y + 14.0 * scale;
+        let btn_center_y = btn_top + 16.0 * scale;
+        let rel_y = btn_center_y - cy;
+        let rel_x = 0.0; // center x
+
+        assert!(card.hit_test_copy_btn(rel_x, rel_y, cx, cy));
+
+        // Switch to internet without URL -> not ready
+        card.switch_tab(QrShareTab::Internet);
+        assert_eq!(card.current_share_url(), None);
+        assert!(!card.hit_test_copy_btn(rel_x, rel_y, cx, cy));
+
+        // Internet URL ready
+        card.set_internet_url("https://share-tunnel.trycloudflare.com/share/abc");
+        assert_eq!(card.current_share_url(), Some("https://share-tunnel.trycloudflare.com/share/abc"));
+        assert!(card.hit_test_copy_btn(rel_x, rel_y, cx, cy));
     }
 }

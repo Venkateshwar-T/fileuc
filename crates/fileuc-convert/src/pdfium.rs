@@ -10,10 +10,23 @@ fn try_create_pdfium() -> Result<Pdfium, ConvertError> {
     if let Ok(exe) = std::env::current_exe() {
         if let Some(parent) = exe.parent() {
             candidate_paths.push(parent.join("pdfium.dll"));
+            if let Some(grandparent) = parent.parent() {
+                candidate_paths.push(grandparent.join("pdfium.dll"));
+            }
         }
     }
     candidate_paths.push(PathBuf::from("pdfium.dll"));
     candidate_paths.push(PathBuf::from(r"C:\Program Files\FileUC\pdfium.dll"));
+
+    if let Ok(cwd) = std::env::current_dir() {
+        candidate_paths.push(cwd.join("pdfium.dll"));
+        if let Some(p) = cwd.parent() {
+            candidate_paths.push(p.join("pdfium.dll"));
+            if let Some(gp) = p.parent() {
+                candidate_paths.push(gp.join("pdfium.dll"));
+            }
+        }
+    }
 
     for path in candidate_paths {
         if path.exists() {

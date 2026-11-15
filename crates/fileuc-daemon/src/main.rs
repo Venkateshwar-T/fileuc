@@ -38,9 +38,17 @@ use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE, WM_QUIT,
 };
 
+struct PopupDragController {
+    start_cursor_x: i32,
+    start_cursor_y: i32,
+    start_win_x: i32,
+    start_win_y: i32,
+}
+
 fn get_missing_plugins() -> Vec<ConversionAction> {
     let mut missing = Vec::new();
     if fileuc_convert::doc::find_pdf2docx().is_none() {
+        missing.push(ConversionAction::OfficeGroup);
         missing.push(ConversionAction::PdfToDocx);
         missing.push(ConversionAction::ExcelToPdf);
         missing.push(ConversionAction::PdfToExcel);
@@ -255,6 +263,13 @@ fn main() {
     let mut conversion_in_flight: Option<(JoinHandle<ConversionResult>, Arc<AtomicU32>)> = None;
     let mut hud_center = hud.hud_center();
     let mut pending_drag_ended: Option<Instant> = None;
+    let mut popup_drag: Option<PopupDragController> = None;
+    let _app_icon = unsafe {
+        use windows::Win32::Foundation::HINSTANCE;
+        use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+        let hinstance: HINSTANCE = GetModuleHandleW(None).unwrap_or_default().into();
+        fileuc_daemon::tray::load_app_icon(hinstance)
+    };
     let mut order_tracker = fileuc_daemon::order_tracker::SelectionOrderTracker::new();
     let detected_wifi_ssid: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     {
@@ -415,7 +430,7 @@ fn main() {
                         let rel_y = (y - hud_center.1) as f32;
                         let cx = hud.size() as f32 / 2.0;
                         let cy = hud.size() as f32 / 2.0;
-                        if card.hit_test_close(rel_x, rel_y, cx, cy) || !card.hit_test_card(rel_x, rel_y, cx, cy) {
+                        if card.hit_test_close(rel_x, rel_y, cx, cy) {
                             dismiss_quick_qr_card(&mut quick_qr_card_state, &mut hud);
                         } else if let Some(tab) = card.hit_test_tab(rel_x, rel_y, cx, cy) {
                             card.switch_tab(tab);
@@ -440,13 +455,20 @@ fn main() {
                                     quick_qr_card_dirty = true;
                                 }
                             }
+                        } else if card.hit_test_card(rel_x, rel_y, cx, cy) {
+                            popup_drag = Some(PopupDragController {
+                                start_cursor_x: x,
+                                start_cursor_y: y,
+                                start_win_x: hud.screen_x(),
+                                start_win_y: hud.screen_y(),
+                            });
                         }
                     } else if let Some(ref mut card) = password_card_state {
                         let rel_x = (x - hud_center.0) as f32;
                         let rel_y = (y - hud_center.1) as f32;
                         let cx = hud.size() as f32 / 2.0;
                         let cy = hud.size() as f32 / 2.0;
-                        if card.hit_test_close(rel_x, rel_y, cx, cy) || !card.hit_test_card(rel_x, rel_y, cx, cy) {
+                        if card.hit_test_close(rel_x, rel_y, cx, cy) {
                             dismiss_password_card(
                                 &mut password_card_state,
                                 &mut hud,
@@ -455,13 +477,20 @@ fn main() {
                             );
                         } else if card.hit_test_submit(rel_x, rel_y, cx, cy) {
                             submit_password = true;
+                        } else if card.hit_test_card(rel_x, rel_y, cx, cy) {
+                            popup_drag = Some(PopupDragController {
+                                start_cursor_x: x,
+                                start_cursor_y: y,
+                                start_win_x: hud.screen_x(),
+                                start_win_y: hud.screen_y(),
+                            });
                         }
                     } else if let Some(ref mut card) = reduce_size_card_state {
                         let rel_x = (x - hud_center.0) as f32;
                         let rel_y = (y - hud_center.1) as f32;
                         let cx = hud.size() as f32 / 2.0;
                         let cy = hud.size() as f32 / 2.0;
-                        if card.hit_test_close(rel_x, rel_y, cx, cy) || !card.hit_test_card(rel_x, rel_y, cx, cy) {
+                        if card.hit_test_close(rel_x, rel_y, cx, cy) {
                             dismiss_reduce_size_card(
                                 &mut reduce_size_card_state,
                                 &mut hud,
@@ -469,17 +498,24 @@ fn main() {
                                 &mut current_actions,
                             );
                         } else if let Some(unit) = card.hit_test_unit(rel_x, rel_y, cx, cy) {
-                            card.unit = unit;
+                            card.set_unit(unit);
                             reduce_size_card_dirty = true;
                         } else if card.hit_test_submit(rel_x, rel_y, cx, cy) {
                             submit_reduce_size = true;
+                        } else if card.hit_test_card(rel_x, rel_y, cx, cy) {
+                            popup_drag = Some(PopupDragController {
+                                start_cursor_x: x,
+                                start_cursor_y: y,
+                                start_win_x: hud.screen_x(),
+                                start_win_y: hud.screen_y(),
+                            });
                         }
                     } else if let Some(ref mut card) = bulk_rename_card_state {
                         let rel_x = (x - hud_center.0) as f32;
                         let rel_y = (y - hud_center.1) as f32;
                         let cx = hud.size() as f32 / 2.0;
                         let cy = hud.size() as f32 / 2.0;
-                        if card.hit_test_close(rel_x, rel_y, cx, cy) || !card.hit_test_card(rel_x, rel_y, cx, cy) {
+                        if card.hit_test_close(rel_x, rel_y, cx, cy) {
                             dismiss_bulk_rename_card(
                                 &mut bulk_rename_card_state,
                                 &mut hud,
@@ -488,13 +524,20 @@ fn main() {
                             );
                         } else if card.hit_test_submit(rel_x, rel_y, cx, cy) {
                             submit_bulk_rename = true;
+                        } else if card.hit_test_card(rel_x, rel_y, cx, cy) {
+                            popup_drag = Some(PopupDragController {
+                                start_cursor_x: x,
+                                start_cursor_y: y,
+                                start_win_x: hud.screen_x(),
+                                start_win_y: hud.screen_y(),
+                            });
                         }
                     } else if let Some(ref mut card) = qr_card_state {
                         let rel_x = (x - hud_center.0) as f32;
                         let rel_y = (y - hud_center.1) as f32;
                         let cx = hud.size() as f32 / 2.0;
                         let cy = hud.size() as f32 / 2.0;
-                        if card.hit_test_close(rel_x, rel_y, cx, cy) || !card.hit_test_card(rel_x, rel_y, cx, cy) {
+                        if card.hit_test_close(rel_x, rel_y, cx, cy) {
                             dismiss_qr_card(
                                 &mut qr_card_state,
                                 &mut share_server,
@@ -504,6 +547,12 @@ fn main() {
                                 &mut current_files,
                                 &mut current_actions,
                             );
+                        } else if card.hit_test_copy_btn(rel_x, rel_y, cx, cy) {
+                            if let Some(url) = card.current_share_url() {
+                                fileuc_daemon::clipboard::set_clipboard_text(url);
+                                card.copy_feedback_timer = Some(Instant::now());
+                                qr_card_dirty = true;
+                            }
                         } else if card.tab == QrShareTab::Internet && !card.is_cloudflared_installed && !card.is_downloading && card.hit_test_download_btn(rel_x, rel_y, cx, cy) {
                             card.is_downloading = true;
                             card.download_pct = Some(0);
@@ -544,12 +593,101 @@ fn main() {
                                     }
                                 }
                             }
+                        } else if card.hit_test_card(rel_x, rel_y, cx, cy) {
+                            popup_drag = Some(PopupDragController {
+                                start_cursor_x: x,
+                                start_cursor_y: y,
+                                start_win_x: hud.screen_x(),
+                                start_win_y: hud.screen_y(),
+                            });
+                        }
+                    } else if progress_tracker.is_some() {
+                        let rel_x = (x - hud_center.0) as f32;
+                        let rel_y = (y - hud_center.1) as f32;
+                        if fileuc_hud::renderer::hit_test_progress(rel_x, rel_y, hud.dpi_scale()) {
+                            popup_drag = Some(PopupDragController {
+                                start_cursor_x: x,
+                                start_cursor_y: y,
+                                start_win_x: hud.screen_x(),
+                                start_win_y: hud.screen_y(),
+                            });
                         }
                     }
-                    detector.mouse_down(btn, x, y, mods)
+                    if popup_drag.is_none() {
+                        detector.mouse_down(btn, x, y, mods)
+                    } else {
+                        None
+                    }
                 }
                 HookEvent::MouseMove { x, y, mods } => {
-                    let g = detector.mouse_move(x, y, mods);
+                    let g = if popup_drag.is_none() {
+                        detector.mouse_move(x, y, mods)
+                    } else {
+                        None
+                    };
+
+                    if let Some(ref drag) = popup_drag {
+                        let dx = x - drag.start_cursor_x;
+                        let dy = y - drag.start_cursor_y;
+                        let new_x = drag.start_win_x + dx;
+                        let new_y = drag.start_win_y + dy;
+                        hud_center = hud.move_to(new_x, new_y);
+
+                        let cx_f = hud.size() as f32 / 2.0;
+                        let cy_f = hud.size() as f32 / 2.0;
+                        let win_x = hud.screen_x();
+                        let win_y = hud.screen_y();
+                        if let Some(ref card) = quick_qr_card_state {
+                            let (l, t, w, h) = card.card_bounds(cx_f, cy_f);
+                            set_mouse_capture_rect(Some((
+                                win_x + l as i32,
+                                win_y + t as i32,
+                                win_x + (l + w) as i32,
+                                win_y + (t + h) as i32,
+                            )));
+                        } else if let Some(ref card) = password_card_state {
+                            let (l, t, w, h) = card.card_bounds(cx_f, cy_f);
+                            set_mouse_capture_rect(Some((
+                                win_x + l as i32,
+                                win_y + t as i32,
+                                win_x + (l + w) as i32,
+                                win_y + (t + h) as i32,
+                            )));
+                        } else if let Some(ref card) = reduce_size_card_state {
+                            let (l, t, w, h) = card.card_bounds(cx_f, cy_f);
+                            set_mouse_capture_rect(Some((
+                                win_x + l as i32,
+                                win_y + t as i32,
+                                win_x + (l + w) as i32,
+                                win_y + (t + h) as i32,
+                            )));
+                        } else if let Some(ref card) = bulk_rename_card_state {
+                            let (l, t, w, h) = card.card_bounds(cx_f, cy_f);
+                            set_mouse_capture_rect(Some((
+                                win_x + l as i32,
+                                win_y + t as i32,
+                                win_x + (l + w) as i32,
+                                win_y + (t + h) as i32,
+                            )));
+                        } else if let Some(ref card) = qr_card_state {
+                            let (l, t, w, h) = card.card_bounds(cx_f, cy_f);
+                            set_mouse_capture_rect(Some((
+                                win_x + l as i32,
+                                win_y + t as i32,
+                                win_x + (l + w) as i32,
+                                win_y + (t + h) as i32,
+                            )));
+                        } else if progress_tracker.is_some() {
+                            let half = (44.0 * hud.dpi_scale()) as i32;
+                            set_mouse_capture_rect(Some((
+                                hud_center.0 - half,
+                                hud_center.1 - half,
+                                hud_center.0 + half,
+                                hud_center.1 + half,
+                            )));
+                        }
+                    }
+
                     let rel_x = (x - hud_center.0) as f32;
                     let rel_y = (y - hud_center.1) as f32;
                     let cx = hud.size() as f32 / 2.0;
@@ -607,14 +745,20 @@ fn main() {
                     } else if let Some(ref mut card) = qr_card_state {
                         let close_hov = card.hit_test_close(rel_x, rel_y, cx, cy);
                         let tab_hov = card.hit_test_tab(rel_x, rel_y, cx, cy);
+                        let copy_hov = card.hit_test_copy_btn(rel_x, rel_y, cx, cy);
                         let dl_hov = card.hit_test_download_btn(rel_x, rel_y, cx, cy);
-                        if card.is_close_hovered != close_hov || card.hovered_tab != tab_hov || card.is_download_btn_hovered != dl_hov {
+                        if card.is_close_hovered != close_hov
+                            || card.hovered_tab != tab_hov
+                            || card.is_copy_hovered != copy_hov
+                            || card.is_download_btn_hovered != dl_hov
+                        {
                             card.is_close_hovered = close_hov;
                             card.hovered_tab = tab_hov;
+                            card.is_copy_hovered = copy_hov;
                             card.is_download_btn_hovered = dl_hov;
                             qr_card_dirty = true;
                         }
-                        if close_hov || tab_hov.is_some() || (card.tab == QrShareTab::Internet && !card.is_cloudflared_installed && dl_hov) {
+                        if close_hov || tab_hov.is_some() || copy_hov || (card.tab == QrShareTab::Internet && !card.is_cloudflared_installed && dl_hov) {
                             is_hand = true;
                         }
                     } else if donut_state.is_some() && progress_tracker.is_none() {
@@ -637,8 +781,13 @@ fn main() {
                     }
 
                     unsafe {
-                        use windows::Win32::UI::WindowsAndMessaging::{LoadCursorW, SetCursor, IDC_ARROW, IDC_HAND};
-                        if is_hand {
+                        use windows::Win32::UI::WindowsAndMessaging::{LoadCursorW, SetCursor, IDC_ARROW, IDC_HAND, IDC_SIZEALL};
+                        if popup_drag.is_some() {
+                            if let Ok(cur) = LoadCursorW(None, IDC_SIZEALL) {
+                                SetCursor(cur);
+                                cursor_is_hand = false;
+                            }
+                        } else if is_hand {
                             if let Ok(cur) = LoadCursorW(None, IDC_HAND) {
                                 SetCursor(cur);
                                 cursor_is_hand = true;
@@ -654,6 +803,9 @@ fn main() {
                     g
                 }
                 HookEvent::MouseUp { btn, x, y, mods } => {
+                    if popup_drag.is_some() {
+                        popup_drag = None;
+                    }
                     let g = detector.mouse_up(btn, x, y, mods);
                     if donut_state.is_none() && progress_tracker.is_none() && password_card_state.is_none() && reduce_size_card_state.is_none() && bulk_rename_card_state.is_none() && qr_card_state.is_none() && quick_qr_card_state.is_none() {
                         if let Some(sel) = fileuc_daemon::explorer::get_foreground_selected_files() {
@@ -840,8 +992,16 @@ fn main() {
             if let Some(g) = gesture {
                 match g {
                     GestureEvent::DragStarted { cursor_x, cursor_y } => {
-                        if !service_enabled || password_card_state.is_some() || qr_card_state.is_some() || quick_qr_card_state.is_some() {
-                            // Service paused or active modal dialog open; do not show HUD
+                        if !service_enabled
+                            || progress_tracker.is_some()
+                            || password_card_state.is_some()
+                            || qr_card_state.is_some()
+                            || quick_qr_card_state.is_some()
+                            || bulk_rename_card_state.is_some()
+                            || reduce_size_card_state.is_some()
+                            || popup_drag.is_some()
+                        {
+                            // Service paused, active conversion progress, or active modal dialog open; do not show HUD
                             continue;
                         }
                         pending_drag_ended = None;
@@ -900,7 +1060,13 @@ fn main() {
                         hud.show();
                     }
                     GestureEvent::DragEnded => {
-                        if progress_tracker.is_none() && qr_card_state.is_none() && password_card_state.is_none() {
+                        if progress_tracker.is_none()
+                            && qr_card_state.is_none()
+                            && password_card_state.is_none()
+                            && quick_qr_card_state.is_none()
+                            && bulk_rename_card_state.is_none()
+                            && reduce_size_card_state.is_none()
+                        {
                             let is_hovering = donut_state
                                 .as_ref()
                                 .and_then(|s| s.hovered_slice)
@@ -925,6 +1091,15 @@ fn main() {
         while let Ok(event) = drop_rx.try_recv() {
             match event {
                 DropTargetEvent::FilesEntered(files) => {
+                    if progress_tracker.is_some()
+                        || password_card_state.is_some()
+                        || qr_card_state.is_some()
+                        || quick_qr_card_state.is_some()
+                        || bulk_rename_card_state.is_some()
+                        || reduce_size_card_state.is_some()
+                    {
+                        continue;
+                    }
                     donut_dirty = true;
                     current_files = order_tracker.order_files(&files);
                     let has_ffmpeg = fileuc_convert::media::find_ffmpeg().is_some();
@@ -952,6 +1127,15 @@ fn main() {
                     }
                 }
                 DropTargetEvent::DragOver { x, y } => {
+                    if progress_tracker.is_some()
+                        || password_card_state.is_some()
+                        || qr_card_state.is_some()
+                        || quick_qr_card_state.is_some()
+                        || bulk_rename_card_state.is_some()
+                        || reduce_size_card_state.is_some()
+                    {
+                        continue;
+                    }
                     if let Some(ref mut state) = donut_state {
                         donut_dirty = true;
                         let rel_x = (x - hud_center.0) as f32;
@@ -962,6 +1146,15 @@ fn main() {
                     }
                 }
                 DropTargetEvent::DragLeft => {
+                    if progress_tracker.is_some()
+                        || password_card_state.is_some()
+                        || qr_card_state.is_some()
+                        || quick_qr_card_state.is_some()
+                        || bulk_rename_card_state.is_some()
+                        || reduce_size_card_state.is_some()
+                    {
+                        continue;
+                    }
                     if let Some(ref mut state) = donut_state {
                         donut_dirty = true;
                         state.set_hovered(None);
@@ -972,6 +1165,15 @@ fn main() {
                     // Do not hide HUD while the user is actively dragging with Ctrl!
                 }
                 DropTargetEvent::Dropped { x, y } => {
+                    if progress_tracker.is_some()
+                        || password_card_state.is_some()
+                        || qr_card_state.is_some()
+                        || quick_qr_card_state.is_some()
+                        || bulk_rename_card_state.is_some()
+                        || reduce_size_card_state.is_some()
+                    {
+                        continue;
+                    }
                     pending_drag_ended = None;
                     let rel_x = (x - hud_center.0) as f32;
                     let rel_y = (y - hud_center.1) as f32;
@@ -993,25 +1195,33 @@ fn main() {
                                 if let Some(children) = fileuc_hud::smart_filter::get_action_children(parent_action) {
                                     if sub_idx < children.len() {
                                         let action = children[sub_idx];
-                                        let files = order_tracker.order_files(&current_files);
-                                        let settings = Arc::new(current_settings.lock().unwrap().clone());
-                                        execute_conversion_action(
-                                            action,
-                                            files,
-                                            settings,
-                                            hud.dpi_scale(),
-                                            hud_center,
-                                            &mut password_card_state,
-                                            &mut password_card_dirty,
-                                            &mut reduce_size_card_state,
-                                            &mut reduce_size_card_dirty,
-                                            &mut bulk_rename_card_state,
-                                            &mut bulk_rename_card_dirty,
-                                            &mut qr_card_state,
-                                            &mut share_server,
-                                            &mut progress_tracker,
-                                            &mut conversion_in_flight,
-                                        );
+                                        if get_missing_plugins().contains(&action) {
+                                            let st = current_settings.lock().unwrap().clone();
+                                            settings_controller.show_tab(st, 1);
+                                            hud.hide();
+                                            current_files.clear();
+                                            current_actions.clear();
+                                        } else {
+                                            let files = order_tracker.order_files(&current_files);
+                                            let settings = Arc::new(current_settings.lock().unwrap().clone());
+                                            execute_conversion_action(
+                                                action,
+                                                files,
+                                                settings,
+                                                hud.dpi_scale(),
+                                                hud_center,
+                                                &mut password_card_state,
+                                                &mut password_card_dirty,
+                                                &mut reduce_size_card_state,
+                                                &mut reduce_size_card_dirty,
+                                                &mut bulk_rename_card_state,
+                                                &mut bulk_rename_card_dirty,
+                                                &mut qr_card_state,
+                                                &mut share_server,
+                                                &mut progress_tracker,
+                                                &mut conversion_in_flight,
+                                            );
+                                        }
                                     }
                                 }
                             }
@@ -1476,6 +1686,7 @@ fn main() {
             }
             if tracker.fade_elapsed() {
                 progress_tracker = None;
+                set_mouse_capture_rect(None);
                 hud.hide();
                 current_files.clear();
                 current_actions.clear();
@@ -1539,8 +1750,12 @@ fn execute_conversion_action(
     conversion_in_flight: &mut Option<(JoinHandle<ConversionResult>, Arc<AtomicU32>)>,
 ) {
     if action == ConversionAction::ReduceSize {
+        let total_size_bytes: u64 = files.iter()
+            .filter_map(|p| std::fs::metadata(p).ok().map(|m| m.len()))
+            .sum();
         let card = ReduceSizeCardState::new(
             files.len(),
+            total_size_bytes,
             dpi_scale,
         );
         let (l, t, w, h) = card.card_bounds(hud_center.0 as f32, hud_center.1 as f32);
@@ -1601,6 +1816,9 @@ fn execute_conversion_action(
                     let mut tracker = ProgressTracker::new();
                     tracker.mark_success();
                     *progress_tracker = Some(tracker);
+                    let half = (44.0 * dpi_scale) as i32;
+                    set_mouse_capture_rect(Some((hud_center.0 - half, hud_center.1 - half, hud_center.0 + half, hud_center.1 + half)));
+                    set_key_capture(false);
                 }
                 Ok(false) => {
                     // Document requires open password: open PasswordCard in Unlock mode!
@@ -1619,6 +1837,9 @@ fn execute_conversion_action(
                     let mut tracker = ProgressTracker::new();
                     tracker.mark_failure(e.to_string());
                     *progress_tracker = Some(tracker);
+                    let half = (44.0 * dpi_scale) as i32;
+                    set_mouse_capture_rect(Some((hud_center.0 - half, hud_center.1 - half, hud_center.0 + half, hud_center.1 + half)));
+                    set_key_capture(false);
                 }
             }
         }
@@ -1648,11 +1869,17 @@ fn execute_conversion_action(
                 let mut tracker = ProgressTracker::new();
                 tracker.mark_failure(err);
                 *progress_tracker = Some(tracker);
+                let half = (44.0 * dpi_scale) as i32;
+                set_mouse_capture_rect(Some((hud_center.0 - half, hud_center.1 - half, hud_center.0 + half, hud_center.1 + half)));
+                set_key_capture(false);
             }
         }
     } else {
         let tracker = ProgressTracker::new();
         *progress_tracker = Some(tracker);
+        let half = (44.0 * dpi_scale) as i32;
+        set_mouse_capture_rect(Some((hud_center.0 - half, hud_center.1 - half, hud_center.0 + half, hud_center.1 + half)));
+        set_key_capture(false);
 
         let progress_val = Arc::new(AtomicU32::new(0));
         let p_clone = progress_val.clone();
