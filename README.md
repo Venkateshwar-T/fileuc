@@ -90,16 +90,13 @@ FileUC/
 
 ## ✦ Installation
 
-### Option 1: 1-Click Fast Installer (Recommended)
-1. Download `FileUC-Setup.exe` from the latest [GitHub Releases](https://github.com/Venkateshwar-T/fileuc/releases).
-2. Double-click the installer:
-   - Installs to `%LOCALAPPDATA%\FileUC` without requiring Administrator (UAC) permissions.
-   - Automatically creates Desktop and Start Menu shortcuts.
-   - Instantly launches FileUC in your System Tray.
-3. Clean uninstallation is available anytime via **Windows Settings → Installed Apps**.
+Download `FileUC-Setup.exe` from the latest [GitHub Releases](https://github.com/Venkateshwar-T/fileuc/releases).
 
-### Option 2: Portable Executable
-Download the standalone `fileuc.exe` from Releases and run it directly.
+1. Double-click **`FileUC-Setup.exe`**:
+   - Modern 1-click fast install directly into `%LOCALAPPDATA%\FileUC` (no UAC / Admin required).
+   - Automatically creates Desktop and Start Menu shortcuts.
+   - Instantly starts FileUC in your System Tray.
+2. Clean uninstallation is available anytime via **Windows Settings → Installed Apps**.
 
 ---
 
