@@ -16,8 +16,12 @@
 !define PRODUCT_UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}"
 !define PRODUCT_UNINST_ROOT_KEY "HKCU"
 
+!ifndef ROOT_DIR
+  !define ROOT_DIR ".."
+!endif
+
 Name "${PRODUCT_NAME}"
-OutFile "..\target\FileUC-Setup.exe"
+OutFile "${ROOT_DIR}\target\FileUC-Setup.exe"
 InstallDir "$LOCALAPPDATA\FileUC"
 InstallDirRegKey HKCU "${PRODUCT_DIR_REGKEY}" ""
 RequestExecutionLevel user
@@ -26,8 +30,8 @@ RequestExecutionLevel user
 SetCompressor /SOLID lzma
 
 ; 1-Click Fast UI Configuration
-!define MUI_ICON "..\assets\icon.ico"
-!define MUI_UNICON "..\assets\icon.ico"
+!define MUI_ICON "${ROOT_DIR}\assets\icon.ico"
+!define MUI_UNICON "${ROOT_DIR}\assets\icon.ico"
 
 ; Minimal fast installation window
 ShowInstDetails nevershow
@@ -53,9 +57,9 @@ Section "MainSection" SEC01
     SetOutPath "$INSTDIR"
     SetOverwrite on
 
-    File "..\target\release\fileuc.exe"
-    File "..\pdfium.dll"
-    File "..\assets\icon.ico"
+    File "${ROOT_DIR}\target\release\fileuc.exe"
+    File "${ROOT_DIR}\pdfium.dll"
+    File "${ROOT_DIR}\assets\icon.ico"
 
     ; Create Shortcuts (Desktop & Start Menu)
     CreateDirectory "$SMPROGRAMS\FileUC"
