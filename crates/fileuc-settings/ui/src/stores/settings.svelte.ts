@@ -78,7 +78,7 @@ export function createSettingsStore() {
   let bannerDismissed = $state<boolean>(false);
   let isCheckingUpdate = $state<boolean>(false);
   let updateStatusMessage = $state<string>('');
-  let currentAppVersion = $state<string>('0.1.0');
+  let currentAppVersion = $state<string>('0.1.1');
 
   async function applyTheme(theme: ThemeChoice) {
     if (theme === 'Light') {
