@@ -31,3 +31,6 @@ Thumbs.db
 [Dd]esktop.ini
 .vscode/
 .idea/
+
+# Local Automation Scripts
+bump-version.ps1
