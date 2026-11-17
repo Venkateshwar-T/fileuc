@@ -4,36 +4,38 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 pub fn find_pdf2docx() -> Option<PathBuf> {
-    // 1. Check %LOCALAPPDATA%\FileUC\plugins\pdf2docx\Scripts\python.exe
+    // 1. Check %LOCALAPPDATA%\FileUC\plugins\pdf2docx\(Scripts|bin)?\python.exe
     if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
-        let p = PathBuf::from(local_app_data)
+        let base = PathBuf::from(local_app_data)
             .join("FileUC")
             .join("plugins")
-            .join("pdf2docx")
-            .join("Scripts")
-            .join("python.exe");
-        if p.exists() {
-            return Some(p);
+            .join("pdf2docx");
+        let candidates = [
+            base.join("Scripts").join("python.exe"),
+            base.join("python.exe"),
+            base.join("bin").join("python.exe"),
+        ];
+        for p in &candidates {
+            if p.exists() {
+                return Some(p.clone());
+            }
         }
     }
 
-    // 2. Check next to executable: <exe_dir>\plugins\pdf2docx\Scripts\python.exe
+    // 2. Check next to executable: <exe_dir>\plugins\pdf2docx\(Scripts|bin)?\python.exe
     if let Ok(exe) = std::env::current_exe() {
         if let Some(parent) = exe.parent() {
-            let next_to_exe = parent
-                .join("plugins")
-                .join("pdf2docx")
-                .join("Scripts")
-                .join("python.exe");
-            if next_to_exe.exists() {
-                return Some(next_to_exe);
-            }
-            let engines_p = parent
-                .join("engines")
-                .join("pdf2docx")
-                .join("python.exe");
-            if engines_p.exists() {
-                return Some(engines_p);
+            let base = parent.join("plugins").join("pdf2docx");
+            let candidates = [
+                base.join("Scripts").join("python.exe"),
+                base.join("python.exe"),
+                base.join("bin").join("python.exe"),
+                parent.join("engines").join("pdf2docx").join("python.exe"),
+            ];
+            for p in &candidates {
+                if p.exists() {
+                    return Some(p.clone());
+                }
             }
         }
     }

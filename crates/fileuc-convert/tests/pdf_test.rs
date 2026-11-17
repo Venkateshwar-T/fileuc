@@ -156,3 +156,20 @@ fn test_merge_pdfs_blocks_password_protected_file() {
     );
     assert!(!merged_out.exists(), "No corrupted PDF output should be generated");
 }
+
+#[test]
+fn test_pdf_to_excel_conversion() {
+    let tmp = tempfile::tempdir().unwrap();
+    let img = tmp.path().join("page.png");
+    image::RgbaImage::new(100, 100).save(&img).unwrap();
+    let pdf_path = tmp.path().join("sample.pdf");
+    images_to_pdf(&[img], &pdf_path).unwrap();
+
+    let excel_out = tmp.path().join("output.xlsx");
+    let res = fileuc_convert::excel::pdf_to_excel(&pdf_path, &excel_out);
+    if fileuc_convert::doc::find_pdf2docx().is_some() {
+        assert!(res.is_ok(), "PDF to Excel should succeed: {:?}", res);
+        assert!(excel_out.exists(), "Output xlsx should exist");
+        assert!(std::fs::metadata(&excel_out).unwrap().len() > 0);
+    }
+}

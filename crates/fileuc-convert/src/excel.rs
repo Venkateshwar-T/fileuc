@@ -242,8 +242,6 @@ except Exception as e:
     let abs_dst = crate::pptx::clean_windows_path(output);
 
     cmd.args(["-c", script, &abs_src, &abs_dst]);
-    cmd.stdout(std::process::Stdio::null());
-    cmd.stderr(std::process::Stdio::null());
 
     #[cfg(windows)]
     {
@@ -252,9 +250,10 @@ except Exception as e:
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
 
-    let status = cmd.status().map_err(|e| ConvertError::ConverterError(e.to_string()))?;
-    if !status.success() {
-        return Err(ConvertError::ConverterError("excel_to_pdf failed".to_string()));
+    let output_res = cmd.output().map_err(|e| ConvertError::ConverterError(e.to_string()))?;
+    if !output_res.status.success() {
+        let stderr = String::from_utf8_lossy(&output_res.stderr);
+        return Err(ConvertError::ConverterError(format!("excel_to_pdf failed: {}", stderr.trim())));
     }
     Ok(())
 }
@@ -308,8 +307,6 @@ except Exception as e:
     let abs_dst = crate::pptx::clean_windows_path(output);
 
     cmd.args(["-c", script, &abs_src, &abs_dst]);
-    cmd.stdout(std::process::Stdio::null());
-    cmd.stderr(std::process::Stdio::null());
 
     #[cfg(windows)]
     {
@@ -318,9 +315,10 @@ except Exception as e:
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
 
-    let status = cmd.status().map_err(|e| ConvertError::ConverterError(e.to_string()))?;
-    if !status.success() {
-        return Err(ConvertError::ConverterError("pdf_to_excel failed".to_string()));
+    let output_res = cmd.output().map_err(|e| ConvertError::ConverterError(e.to_string()))?;
+    if !output_res.status.success() {
+        let stderr = String::from_utf8_lossy(&output_res.stderr);
+        return Err(ConvertError::ConverterError(format!("pdf_to_excel failed: {}", stderr.trim())));
     }
     Ok(())
 }

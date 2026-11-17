@@ -1005,59 +1005,72 @@ fn main() {
                             continue;
                         }
                         pending_drag_ended = None;
-                        donut_dirty = true;
-                        hud_center = hud.position_at_center(cursor_x, cursor_y);
-                        if hud.size() != pixmap.width() {
-                            pixmap = tiny_skia::Pixmap::new(hud.size(), hud.size()).unwrap();
+
+                        // Check whether cursor or active window is Explorer or Desktop (Filee target filtering)
+                        if !fileuc_daemon::explorer::is_explorer_or_desktop_at(cursor_x, cursor_y) {
+                            continue;
                         }
 
-                        // Try to immediately detect selected files from Explorer
-                        let detected = fileuc_daemon::explorer::get_selected_files();
-                        if !detected.is_empty() {
-                            order_tracker.update_selection(&detected);
-                            current_files = order_tracker.order_files(&detected);
+                        // Try to immediately detect selected files from foreground Explorer or Desktop window
+                        let detected = fileuc_daemon::explorer::get_selected_files_at(cursor_x, cursor_y);
+                        let valid_files: Vec<PathBuf> = detected
+                            .into_iter()
+                            .filter(|p| fileuc_daemon::explorer::is_supported_user_file(p))
+                            .collect();
+
+                        if !valid_files.is_empty() {
                             let has_ffmpeg = fileuc_convert::media::find_ffmpeg().is_some();
-                            let actions = filter_actions(&current_files, has_ffmpeg);
-                            current_actions = actions.clone();
+                            let actions = filter_actions(&valid_files, has_ffmpeg);
+                            if !actions.is_empty() {
+                                donut_dirty = true;
+                                hud_center = hud.position_at_center(cursor_x, cursor_y);
+                                if hud.size() != pixmap.width() {
+                                    pixmap = tiny_skia::Pixmap::new(hud.size(), hud.size()).unwrap();
+                                }
 
-                            let file_label = if current_files.len() == 1 {
-                                current_files[0].extension().and_then(|s| s.to_str()).map(|ext| format!("1 {}", ext.to_uppercase()))
-                            } else if current_files.len() > 1 {
-                                Some(format!("{} FILES", current_files.len()))
-                            } else {
-                                None
-                            };
+                                order_tracker.update_selection(&valid_files);
+                                current_files = order_tracker.order_files(&valid_files);
+                                current_actions = actions.clone();
 
-                            let mut state = DonutState::new(
-                                current_actions.clone(),
-                                current_files.len(),
-                                hud.dpi_scale(),
-                            );
-                            if let Some(lbl) = file_label {
-                                state.set_file_label(lbl);
+                                let file_label = if current_files.len() == 1 {
+                                    current_files[0].extension().and_then(|s| s.to_str()).map(|ext| format!("1 {}", ext.to_uppercase()))
+                                } else if current_files.len() > 1 {
+                                    Some(format!("{} FILES", current_files.len()))
+                                } else {
+                                    None
+                                };
+
+                                let mut state = DonutState::new(
+                                    current_actions.clone(),
+                                    current_files.len(),
+                                    hud.dpi_scale(),
+                                );
+                                if let Some(lbl) = file_label {
+                                    state.set_file_label(lbl);
+                                }
+                                state.set_missing_plugins(get_missing_plugins());
+                                donut_state = Some(state);
+                                hud.show();
                             }
-                            state.set_missing_plugins(get_missing_plugins());
-                            donut_state = Some(state);
                         } else {
-                            // If not yet detected via COM, show responsive donut ring with has_files = false
-                            // so OLE DragEnter hit-tests immediately, but NO wrong format labels are drawn!
+                            // Target window is Explorer or Desktop, but COM has not reported files yet (e.g. multi-tab or pending).
+                            // Open non-activated HUD window ready for native OLE DragEnter (Filee staged drag lifecycle).
                             current_files.clear();
-                            current_actions = vec![
-                                ConversionAction::ToPng,
-                                ConversionAction::ToJpg,
-                                ConversionAction::ToPdf,
-                                ConversionAction::CreateZip,
-                            ];
+                            current_actions.clear();
+                            hud_center = hud.position_at_center(cursor_x, cursor_y);
+                            if hud.size() != pixmap.width() {
+                                pixmap = tiny_skia::Pixmap::new(hud.size(), hud.size()).unwrap();
+                            }
                             let mut state = DonutState::new(
-                                current_actions.clone(),
+                                Vec::new(),
                                 0,
                                 hud.dpi_scale(),
                             );
                             state.has_files = false;
-                            state.set_missing_plugins(get_missing_plugins());
                             donut_state = Some(state);
+                            donut_dirty = true;
+                            hud.show();
                         }
-                        hud.show();
                     }
                     GestureEvent::DragEnded => {
                         if progress_tracker.is_none()
@@ -1069,10 +1082,21 @@ fn main() {
                         {
                             let is_hovering = donut_state
                                 .as_ref()
-                                .and_then(|s| s.hovered_slice)
-                                .is_some();
+                                .map(|s| {
+                                    if !s.has_files {
+                                        return false;
+                                    }
+                                    if let Some(g_idx) = s.hovered_slice {
+                                        if g_idx < current_actions.len() && current_actions[g_idx] == ConversionAction::OfficeGroup {
+                                            return false;
+                                        }
+                                    }
+                                    s.hovered_slice.is_some() || s.sub_hover.is_some()
+                                })
+                                .unwrap_or(false);
+
                             if is_hovering {
-                                // Mouse released while on a slice: give Windows OLE 250ms to deliver Dropped
+                                // Mouse released while on a valid action slice or sub-slice: give Windows OLE 250ms to deliver Dropped
                                 pending_drag_ended = Some(Instant::now());
                             } else {
                                 hud.hide();
@@ -1100,25 +1124,43 @@ fn main() {
                     {
                         continue;
                     }
+                    let valid: Vec<PathBuf> = files
+                        .into_iter()
+                        .filter(|p| fileuc_daemon::explorer::is_supported_user_file(p))
+                        .collect();
+                    if valid.is_empty() {
+                        hud.hide();
+                        donut_state = None;
+                        current_files.clear();
+                        current_actions.clear();
+                        continue;
+                    }
                     donut_dirty = true;
-                    current_files = order_tracker.order_files(&files);
+                    current_files = order_tracker.order_files(&valid);
                     let has_ffmpeg = fileuc_convert::media::find_ffmpeg().is_some();
                     let actions = filter_actions(&current_files, has_ffmpeg);
+                    if actions.is_empty() {
+                        hud.hide();
+                        donut_state = None;
+                        current_files.clear();
+                        current_actions.clear();
+                        continue;
+                    }
                     current_actions = actions.clone();
 
-                    let file_label = if files.len() == 1 {
-                        files[0].extension().and_then(|s| s.to_str()).map(|ext| format!("1 {}", ext.to_uppercase()))
-                    } else if files.len() > 1 {
-                        Some(format!("{} FILES", files.len()))
+                    let file_label = if current_files.len() == 1 {
+                        current_files[0].extension().and_then(|s| s.to_str()).map(|ext| format!("1 {}", ext.to_uppercase()))
+                    } else if current_files.len() > 1 {
+                        Some(format!("{} FILES", current_files.len()))
                     } else {
                         None
                     };
 
                     if let Some(ref mut state) = donut_state {
-                        state.update_content(actions, files.len(), file_label);
+                        state.update_content(actions, current_files.len(), file_label);
                         state.set_missing_plugins(get_missing_plugins());
                     } else {
-                        let mut state = DonutState::new(actions, files.len(), hud.dpi_scale());
+                        let mut state = DonutState::new(actions, current_files.len(), hud.dpi_scale());
                         if let Some(lbl) = file_label {
                             state.set_file_label(lbl);
                         }
@@ -1180,10 +1222,32 @@ fn main() {
                     let dpi_scale = hud.dpi_scale();
                     let pop_out = 7.0 * dpi_scale;
 
+                    let saved_sub = donut_state.as_ref().and_then(|s| s.sub_hover);
+                    let saved_group = donut_state.as_ref().and_then(|s| s.expanded_group);
+                    let saved_hovered = donut_state.as_ref().and_then(|s| s.hovered_slice);
+
                     let hit = if let Some(ref mut state) = donut_state {
-                        state.track_pointer(rel_x, rel_y, pop_out)
+                        let h = state.track_pointer(rel_x, rel_y, pop_out);
+                        match h {
+                            HitResult::Outside => {
+                                if let (Some(g), Some(sub)) = (saved_group, saved_sub) {
+                                    HitResult::SubSlice { group_idx: g, sub_idx: sub }
+                                } else if let Some(idx) = saved_hovered {
+                                    HitResult::Slice(idx)
+                                } else {
+                                    HitResult::Outside
+                                }
+                            }
+                            other => other,
+                        }
                     } else {
-                        HitResult::Outside
+                        if let (Some(g), Some(sub)) = (saved_group, saved_sub) {
+                            HitResult::SubSlice { group_idx: g, sub_idx: sub }
+                        } else if let Some(idx) = saved_hovered {
+                            HitResult::Slice(idx)
+                        } else {
+                            HitResult::Outside
+                        }
                     };
 
                     donut_state = None;
@@ -1195,66 +1259,52 @@ fn main() {
                                 if let Some(children) = fileuc_hud::smart_filter::get_action_children(parent_action) {
                                     if sub_idx < children.len() {
                                         let action = children[sub_idx];
-                                        if get_missing_plugins().contains(&action) {
-                                            let st = current_settings.lock().unwrap().clone();
-                                            settings_controller.show_tab(st, 1);
-                                            hud.hide();
-                                            current_files.clear();
-                                            current_actions.clear();
-                                        } else {
-                                            let files = order_tracker.order_files(&current_files);
-                                            let settings = Arc::new(current_settings.lock().unwrap().clone());
-                                            execute_conversion_action(
-                                                action,
-                                                files,
-                                                settings,
-                                                hud.dpi_scale(),
-                                                hud_center,
-                                                &mut password_card_state,
-                                                &mut password_card_dirty,
-                                                &mut reduce_size_card_state,
-                                                &mut reduce_size_card_dirty,
-                                                &mut bulk_rename_card_state,
-                                                &mut bulk_rename_card_dirty,
-                                                &mut qr_card_state,
-                                                &mut share_server,
-                                                &mut progress_tracker,
-                                                &mut conversion_in_flight,
-                                            );
-                                        }
+                                        dispatch_action(
+                                            action,
+                                            &mut current_files,
+                                            &mut current_actions,
+                                            &order_tracker,
+                                            &current_settings,
+                                            &settings_controller,
+                                            &mut hud,
+                                            hud_center,
+                                            &mut password_card_state,
+                                            &mut password_card_dirty,
+                                            &mut reduce_size_card_state,
+                                            &mut reduce_size_card_dirty,
+                                            &mut bulk_rename_card_state,
+                                            &mut bulk_rename_card_dirty,
+                                            &mut qr_card_state,
+                                            &mut share_server,
+                                            &mut progress_tracker,
+                                            &mut conversion_in_flight,
+                                        );
                                     }
                                 }
                             }
                         }
                         HitResult::Slice(idx) if idx < current_actions.len() => {
                             let action = current_actions[idx];
-                            if get_missing_plugins().contains(&action) {
-                                let st = current_settings.lock().unwrap().clone();
-                                settings_controller.show_tab(st, 1);
-                                hud.hide();
-                                current_files.clear();
-                                current_actions.clear();
-                            } else {
-                                let files = order_tracker.order_files(&current_files);
-                                let settings = Arc::new(current_settings.lock().unwrap().clone());
-                                execute_conversion_action(
-                                    action,
-                                    files,
-                                    settings,
-                                    hud.dpi_scale(),
-                                    hud_center,
-                                    &mut password_card_state,
-                                    &mut password_card_dirty,
-                                    &mut reduce_size_card_state,
-                                    &mut reduce_size_card_dirty,
-                                    &mut bulk_rename_card_state,
-                                    &mut bulk_rename_card_dirty,
-                                    &mut qr_card_state,
-                                    &mut share_server,
-                                    &mut progress_tracker,
-                                    &mut conversion_in_flight,
-                                );
-                            }
+                            dispatch_action(
+                                action,
+                                &mut current_files,
+                                &mut current_actions,
+                                &order_tracker,
+                                &current_settings,
+                                &settings_controller,
+                                &mut hud,
+                                hud_center,
+                                &mut password_card_state,
+                                &mut password_card_dirty,
+                                &mut reduce_size_card_state,
+                                &mut reduce_size_card_dirty,
+                                &mut bulk_rename_card_state,
+                                &mut bulk_rename_card_dirty,
+                                &mut qr_card_state,
+                                &mut share_server,
+                                &mut progress_tracker,
+                                &mut conversion_in_flight,
+                            );
                         }
                         _ => {
                             hud.hide();
@@ -1299,35 +1349,27 @@ fn main() {
 
                         if let Some(action) = chosen_action {
                             if !current_files.is_empty() {
-                                if get_missing_plugins().contains(&action) {
-                                    let st = current_settings.lock().unwrap().clone();
-                                    settings_controller.show_tab(st, 1);
-                                    hud.hide();
-                                    current_files.clear();
-                                    current_actions.clear();
-                                    triggered = true;
-                                } else {
-                                    let files = order_tracker.order_files(&current_files);
-                                    let settings = Arc::new(current_settings.lock().unwrap().clone());
-                                    execute_conversion_action(
-                                        action,
-                                        files,
-                                        settings,
-                                        hud.dpi_scale(),
-                                        hud_center,
-                                        &mut password_card_state,
-                                        &mut password_card_dirty,
-                                        &mut reduce_size_card_state,
-                                        &mut reduce_size_card_dirty,
-                                        &mut bulk_rename_card_state,
-                                        &mut bulk_rename_card_dirty,
-                                        &mut qr_card_state,
-                                        &mut share_server,
-                                        &mut progress_tracker,
-                                        &mut conversion_in_flight,
-                                    );
-                                    triggered = true;
-                                }
+                                dispatch_action(
+                                    action,
+                                    &mut current_files,
+                                    &mut current_actions,
+                                    &order_tracker,
+                                    &current_settings,
+                                    &settings_controller,
+                                    &mut hud,
+                                    hud_center,
+                                    &mut password_card_state,
+                                    &mut password_card_dirty,
+                                    &mut reduce_size_card_state,
+                                    &mut reduce_size_card_dirty,
+                                    &mut bulk_rename_card_state,
+                                    &mut bulk_rename_card_dirty,
+                                    &mut qr_card_state,
+                                    &mut share_server,
+                                    &mut progress_tracker,
+                                    &mut conversion_in_flight,
+                                );
+                                triggered = true;
                             }
                         }
                     }
@@ -1732,6 +1774,63 @@ fn main() {
     }
 }
 
+fn dispatch_action(
+    action: ConversionAction,
+    current_files: &mut Vec<PathBuf>,
+    current_actions: &mut Vec<ConversionAction>,
+    order_tracker: &fileuc_daemon::order_tracker::SelectionOrderTracker,
+    current_settings: &Arc<Mutex<fileuc_settings::store::AppSettings>>,
+    settings_controller: &fileuc_settings::SettingsController,
+    hud: &mut HudWindow,
+    hud_center: (i32, i32),
+    password_card_state: &mut Option<PasswordCardState>,
+    password_card_dirty: &mut bool,
+    reduce_size_card_state: &mut Option<ReduceSizeCardState>,
+    reduce_size_card_dirty: &mut bool,
+    bulk_rename_card_state: &mut Option<BulkRenameCardState>,
+    bulk_rename_card_dirty: &mut bool,
+    qr_card_state: &mut Option<QrCardState>,
+    share_server: &mut Option<ShareServerHandle>,
+    progress_tracker: &mut Option<ProgressTracker>,
+    conversion_in_flight: &mut Option<(JoinHandle<ConversionResult>, Arc<AtomicU32>)>,
+) {
+    if action == ConversionAction::OfficeGroup {
+        // Parent category slice is an expandable container (DOCX / EXCEL).
+        // Releasing directly on the parent category dismisses without converting.
+        hud.hide();
+        current_files.clear();
+        current_actions.clear();
+        return;
+    }
+    if get_missing_plugins().contains(&action) {
+        let st = current_settings.lock().unwrap().clone();
+        settings_controller.show_tab(st, 1);
+        hud.hide();
+        current_files.clear();
+        current_actions.clear();
+        return;
+    }
+    let files = order_tracker.order_files(current_files);
+    let settings = Arc::new(current_settings.lock().unwrap().clone());
+    execute_conversion_action(
+        action,
+        files,
+        settings,
+        hud.dpi_scale(),
+        hud_center,
+        password_card_state,
+        password_card_dirty,
+        reduce_size_card_state,
+        reduce_size_card_dirty,
+        bulk_rename_card_state,
+        bulk_rename_card_dirty,
+        qr_card_state,
+        share_server,
+        progress_tracker,
+        conversion_in_flight,
+    );
+}
+
 fn execute_conversion_action(
     action: ConversionAction,
     files: Vec<PathBuf>,
@@ -1775,24 +1874,6 @@ fn execute_conversion_action(
         set_key_capture(true);
         *bulk_rename_card_state = Some(card);
         *bulk_rename_card_dirty = true;
-    } else if action == ConversionAction::OfficeGroup {
-        return execute_conversion_action(
-            ConversionAction::PdfToDocx,
-            files,
-            settings,
-            dpi_scale,
-            hud_center,
-            password_card_state,
-            password_card_dirty,
-            reduce_size_card_state,
-            reduce_size_card_dirty,
-            bulk_rename_card_state,
-            bulk_rename_card_dirty,
-            qr_card_state,
-            share_server,
-            progress_tracker,
-            conversion_in_flight,
-        );
     } else if action == ConversionAction::LockPdf {
         if let Some(first) = files.first() {
             let card = PasswordCardState::new(
