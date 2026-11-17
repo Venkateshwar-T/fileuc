@@ -40,13 +40,13 @@ fn single_unencrypted_pdf_gets_lock_pdf() {
 }
 
 #[test]
-fn multiple_unencrypted_pdfs_get_lock_pdf() {
+fn multiple_unencrypted_pdfs_do_not_get_lock_pdf() {
     let files = vec![PathBuf::from("a.pdf"), PathBuf::from("b.pdf")];
     let actions = filter_actions(&files, false);
+    assert!(!actions.contains(&ConversionAction::LockPdf));
     assert_eq!(
         actions,
         vec![
-            ConversionAction::LockPdf,
             ConversionAction::MergePdf,
             ConversionAction::OfficeGroup,
             ConversionAction::PdfOcr,

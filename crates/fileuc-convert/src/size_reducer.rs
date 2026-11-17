@@ -111,8 +111,7 @@ fn reduce_image_size(
     target_bytes: u64,
     orig_size: u64,
 ) -> Result<(), ConvertError> {
-    let img = image::open(src)
-        .map_err(|e| ConvertError::ConverterError(format!("Failed to open image: {}", e)))?;
+    let img = crate::image::open_image_with_orientation(src)?;
 
     let ext = dest
         .extension()

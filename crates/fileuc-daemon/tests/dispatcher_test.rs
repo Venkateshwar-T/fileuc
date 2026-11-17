@@ -234,6 +234,7 @@ fn test_dispatch_create_7z_with_progress() {
     assert!(result.errors.is_empty());
     assert_eq!(result.outputs.len(), 1);
     assert!(result.outputs[0].exists());
+    assert_eq!(result.outputs[0].file_name().unwrap(), "document_zipped.7z");
     assert_eq!(result.outputs[0].extension().unwrap(), "7z");
 
     let log = progress_log.lock().unwrap();
@@ -270,9 +271,44 @@ fn test_dispatch_create_zip_with_progress() {
     assert!(result.errors.is_empty());
     assert_eq!(result.outputs.len(), 1);
     assert!(result.outputs[0].exists());
+    assert_eq!(result.outputs[0].file_name().unwrap(), "test_zipped.zip");
     assert_eq!(result.outputs[0].extension().unwrap(), "zip");
 
     let log = progress_log.lock().unwrap();
     assert!(!log.is_empty());
     assert!((log.last().unwrap() - 1.0).abs() < 0.001);
+}
+
+#[test]
+fn test_dispatch_merge_pdfs_named_with_merged_suffix() {
+    let tmp = tempfile::tempdir().unwrap();
+    let img1 = tmp.path().join("img1.png");
+    image::RgbaImage::new(10, 10).save(&img1).unwrap();
+    let pdf1 = tmp.path().join("DocA.pdf");
+    fileuc_convert::pdf::images_to_pdf(&[img1], &pdf1).unwrap();
+
+    let img2 = tmp.path().join("img2.png");
+    image::RgbaImage::new(10, 10).save(&img2).unwrap();
+    let pdf2 = tmp.path().join("DocB.pdf");
+    fileuc_convert::pdf::images_to_pdf(&[img2], &pdf2).unwrap();
+
+    let settings = Arc::new(AppSettings {
+        output_mode: OutputMode::NextToOriginal,
+        ..AppSettings::default()
+    });
+
+    let handle = dispatch(
+        ConversionRequest {
+            files: vec![pdf1.clone(), pdf2.clone()],
+            action: ConversionAction::MergePdf,
+            settings,
+        },
+        |_| {},
+    );
+
+    let result = handle.join().unwrap();
+    assert!(result.errors.is_empty(), "Merge errors: {:?}", result.errors);
+    assert_eq!(result.outputs.len(), 1);
+    assert!(result.outputs[0].exists());
+    assert_eq!(result.outputs[0].file_name().unwrap(), "DocA_merged.pdf");
 }

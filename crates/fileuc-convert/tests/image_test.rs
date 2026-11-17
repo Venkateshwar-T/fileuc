@@ -87,3 +87,18 @@ fn ico_conversion_produces_authentic_multi_res_icon() {
     let first_img_offset = u32::from_le_bytes([bytes[18], bytes[19], bytes[20], bytes[21]]) as usize;
     assert_eq!(&bytes[first_img_offset..first_img_offset + 8], &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
 }
+
+#[test]
+fn test_open_image_with_orientation_and_conversion() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("photo.png");
+    image::RgbaImage::new(40, 20).save(&src).unwrap();
+
+    let img = fileuc_convert::image::open_image_with_orientation(&src).unwrap();
+    assert_eq!(img.width(), 40);
+    assert_eq!(img.height(), 20);
+
+    let webp_out = fileuc_convert::image::convert_image(&src, ImageFormat::WebP, &ImageOptions::default()).unwrap();
+    assert!(webp_out.exists());
+    assert_eq!(webp_out.extension().unwrap(), "webp");
+}

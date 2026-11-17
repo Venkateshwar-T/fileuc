@@ -78,9 +78,15 @@ export function createSettingsStore() {
   let bannerDismissed = $state<boolean>(false);
   let isCheckingUpdate = $state<boolean>(false);
   let updateStatusMessage = $state<string>('');
-  let currentAppVersion = $state<string>('0.1.1');
+  let currentAppVersion = $state<string>('0.1.2');
+  let isUpdating = $state<boolean>(false);
+  let updateProgress = $state<number>(0);
+  let updateProgressText = $state<string>('');
+  let updateError = $state<string | null>(null);
 
   async function applyTheme(theme: ThemeChoice) {
+    document.documentElement.classList.add('disable-transitions');
+
     if (theme === 'Light') {
       isDarkMode = false;
       document.documentElement.classList.remove('dark');
@@ -106,6 +112,12 @@ export function createSettingsStore() {
         document.documentElement.classList.add('light');
       }
     }
+
+    // Force layout reflow so theme color variables update synchronously
+    void document.documentElement.offsetHeight;
+    requestAnimationFrame(() => {
+      document.documentElement.classList.remove('disable-transitions');
+    });
   }
 
   async function loadSettings() {
@@ -196,6 +208,25 @@ export function createSettingsStore() {
     }
   }
 
+  async function startUpdate() {
+    if (!pendingUpdate || !pendingUpdate.download_url) {
+      await openReleaseUrl();
+      return;
+    }
+    isUpdating = true;
+    updateError = null;
+    updateProgress = 0.05;
+    updateProgressText = 'Connecting to update server...';
+
+    try {
+      await invoke('install_update_now', { downloadUrl: pendingUpdate.download_url });
+    } catch (e) {
+      isUpdating = false;
+      updateError = String(e);
+      await openReleaseUrl();
+    }
+  }
+
   async function saveSettings() {
     try {
       const payload = $state.snapshot(settings);
@@ -275,6 +306,18 @@ export function createSettingsStore() {
       await listen<{ enabled: boolean }>('service-toggled', (event) => {
         settings.service_enabled = event.payload.enabled;
       });
+
+      await listen<{ progress: number; text: string; done: boolean; error?: string }>('update-progress', (event) => {
+        const payload = event.payload;
+        updateProgress = payload.progress;
+        updateProgressText = payload.text;
+        if (payload.error) {
+          updateError = payload.error;
+          isUpdating = false;
+        } else if (payload.done) {
+          updateProgress = 1.0;
+        }
+      });
     } catch {
       // Not in Tauri context (browser preview)
     }
@@ -293,6 +336,10 @@ export function createSettingsStore() {
     get isCheckingUpdate() { return isCheckingUpdate; },
     get updateStatusMessage() { return updateStatusMessage; },
     get currentAppVersion() { return currentAppVersion; },
+    get isUpdating() { return isUpdating; },
+    get updateProgress() { return updateProgress; },
+    get updateProgressText() { return updateProgressText; },
+    get updateError() { return updateError; },
     loadSettings,
     saveSettings,
     toggleService,
@@ -304,6 +351,7 @@ export function createSettingsStore() {
     checkForUpdates,
     dismissBanner,
     openReleaseUrl,
+    startUpdate,
   };
 }
 

@@ -232,13 +232,9 @@ pub fn get_selected_files() -> Vec<PathBuf> {
 /// - Windows shell virtual objects / GUID namespaces (e.g. ::{645FF040...} Recycle Bin, ::{20D04FE0...} This PC)
 /// - Non-existent file paths
 /// - Windows system files & folders ($Recycle.Bin, desktop.ini, thumbs.db, System Volume Information)
-/// - Application binaries, installers, and control panel applets (.exe, .msi, .msp, .com, .scr, .cpl, .msc)
-/// - Shell shortcuts (.lnk, .url)
-/// - System scripts (.bat, .cmd, .ps1, .vbs, .vbe, .js, .jse, .wsf, .wsh)
-/// - System libraries & drivers (.dll, .sys, .drv, .ocx, .ax)
 pub fn is_supported_user_file(path: &std::path::Path) -> bool {
     let path_str = path.to_string_lossy();
-    if path_str.contains("::{") || path_str.starts_with("::") {
+    if path_str.contains("::{") || path_str.starts_with("::") || path_str.starts_with("shell:") {
         return false;
     }
     if !path.exists() {
@@ -254,22 +250,9 @@ pub fn is_supported_user_file(path: &std::path::Path) -> bool {
         || file_name == "desktop.ini"
         || file_name == "thumbs.db"
         || file_name == "system volume information"
+        || file_name == "recycle bin"
     {
         return false;
-    }
-
-    if let Some(ext) = path.extension().and_then(|e| e.to_str()).map(|e| e.to_lowercase()) {
-        match ext.as_str() {
-            // Application executables & installers
-            "exe" | "msi" | "msp" | "com" | "scr" | "cpl" | "msc" => return false,
-            // Shortcuts
-            "lnk" | "url" => return false,
-            // System scripts
-            "bat" | "cmd" | "ps1" | "vbs" | "vbe" | "js" | "jse" | "wsf" | "wsh" => return false,
-            // System libraries & drivers
-            "dll" | "sys" | "drv" | "ocx" | "ax" => return false,
-            _ => {}
-        }
     }
 
     true
@@ -308,30 +291,20 @@ mod tests {
     }
 
     #[test]
-    fn test_is_supported_user_file_rejects_executables_and_shortcuts() {
+    fn test_is_supported_user_file_allows_real_files_including_exe() {
         let temp = std::env::temp_dir();
         let exe_path = temp.join("test_app.exe");
-        let lnk_path = temp.join("test_shortcut.lnk");
-        let bat_path = temp.join("test_script.bat");
-        let dll_path = temp.join("test_lib.dll");
         let pdf_path = temp.join("valid_doc.pdf");
+        let recycle_virtual = Path::new("::{645FF040-5081-101B-9F08-00AA002F954E}");
 
         std::fs::write(&exe_path, b"MZ dummy exe").unwrap();
-        std::fs::write(&lnk_path, b"dummy lnk").unwrap();
-        std::fs::write(&bat_path, b"@echo off").unwrap();
-        std::fs::write(&dll_path, b"dummy dll").unwrap();
         std::fs::write(&pdf_path, b"%PDF-1.4").unwrap();
 
-        assert!(!is_supported_user_file(&exe_path));
-        assert!(!is_supported_user_file(&lnk_path));
-        assert!(!is_supported_user_file(&bat_path));
-        assert!(!is_supported_user_file(&dll_path));
-        assert!(is_supported_user_file(&pdf_path));
+        assert!(is_supported_user_file(&exe_path), "Real .exe files on disk must be supported for zipping/sharing");
+        assert!(is_supported_user_file(&pdf_path), "Real PDF files must be supported");
+        assert!(!is_supported_user_file(recycle_virtual), "Virtual shell items must be rejected");
 
         let _ = std::fs::remove_file(exe_path);
-        let _ = std::fs::remove_file(lnk_path);
-        let _ = std::fs::remove_file(bat_path);
-        let _ = std::fs::remove_file(dll_path);
         let _ = std::fs::remove_file(pdf_path);
     }
 }

@@ -163,7 +163,7 @@ pub fn dispatch(
             ConversionAction::MergePdf => {
                 on_progress(0.0);
                 let first = &request.files[0];
-                let out_pdf = fileuc_convert::output::resolve_output_path(first, "pdf");
+                let out_pdf = fileuc_convert::output::resolve_suffixed_output_path(first, "_merged", "pdf", None);
                 match merge_pdfs(&request.files, &out_pdf) {
                     Ok(()) => {
                         let final_out = apply_output_mode(out_pdf, &request.settings.output_mode);
@@ -251,7 +251,7 @@ pub fn dispatch(
             }
             ConversionAction::CreateZip | ConversionAction::OneZip => {
                 let first = &request.files[0];
-                let out_zip = fileuc_convert::output::resolve_output_path(first, "zip");
+                let out_zip = fileuc_convert::output::resolve_suffixed_output_path(first, "_zipped", "zip", None);
                 match fileuc_convert::archive::create_zip_with_progress(&request.files, &out_zip, |p| {
                     on_progress(p);
                 }) {
@@ -265,7 +265,7 @@ pub fn dispatch(
             }
             ConversionAction::Create7z => {
                 let first = &request.files[0];
-                let out_7z = fileuc_convert::output::resolve_output_path(first, "7z");
+                let out_7z = fileuc_convert::output::resolve_suffixed_output_path(first, "_zipped", "7z", None);
                 match fileuc_convert::archive::create_7z_with_progress(&request.files, &out_7z, |p| {
                     on_progress(p);
                 }) {

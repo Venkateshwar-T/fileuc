@@ -117,9 +117,8 @@ fn strip_image_metadata(src: &Path, dest: &Path) -> Result<(), ConvertError> {
         }
     }
 
-    // 2. Decode and re-encode pixel buffer: standard image crate encoders write zero metadata chunks
-    let img = image::open(src)
-        .map_err(|e| ConvertError::ConverterError(format!("Failed to open image for stripping: {}", e)))?;
+    // 2. Decode and re-encode pixel buffer with EXIF orientation: standard image crate encoders write zero metadata chunks
+    let img = crate::image::open_image_with_orientation(src)?;
 
     img.save(dest)
         .map_err(|e| ConvertError::IoError(format!("Failed to save clean image: {}", e)))?;

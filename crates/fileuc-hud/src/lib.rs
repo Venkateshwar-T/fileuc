@@ -1,3 +1,4 @@
+pub mod alert_card;
 pub mod bulk_rename_card;
 pub mod card_common;
 pub mod donut_geometry;
@@ -17,6 +18,7 @@ pub mod spring;
 pub mod surface;
 pub mod theme;
 
+pub use alert_card::{render_alert_card, AlertCardState};
 pub use bulk_rename_card::{render_bulk_rename_card, BulkRenameCardState};
 pub use donut_geometry::{DonutLayout, HitResult};
 pub use drop_target::{

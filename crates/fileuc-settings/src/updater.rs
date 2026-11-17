@@ -166,6 +166,230 @@ pub fn check_for_updates_internal(force: bool) -> UpdateCheckResponse {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateProgressPayload {
+    pub progress: f32, // 0.0 to 1.0
+    pub text: String,
+    pub done: bool,
+    pub error: Option<String>,
+}
+
+pub fn download_and_install_update<R: tauri::Runtime>(
+    app_handle: tauri::AppHandle<R>,
+    download_url: String,
+) -> Result<(), String> {
+    use tauri::Emitter;
+
+    // If download url is not an installer, fallback to browser
+    let is_direct_installer = download_url.ends_with(".exe") || download_url.contains("Setup");
+    if !is_direct_installer {
+        let _ = open_url_in_browser(&download_url);
+        return Ok(());
+    }
+
+    std::thread::spawn(move || {
+        let _ = app_handle.emit(
+            "update-progress",
+            UpdateProgressPayload {
+                progress: 0.05,
+                text: "Connecting to GitHub server...".to_string(),
+                done: false,
+                error: None,
+            },
+        );
+
+        let temp_dir = std::env::temp_dir();
+        let target_installer = temp_dir.join("FileUC-Setup-Update.exe");
+        let temp_download = temp_dir.join("FileUC-Setup-Update.tmp");
+
+        let _ = std::fs::remove_file(&temp_download);
+
+        // 1. Query Content-Length via curl.exe HEAD request (-I)
+        let mut head_cmd = std::process::Command::new("curl.exe");
+        head_cmd.args(["-s", "-I", "-L", "-m", "10", &download_url]);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            head_cmd.creation_flags(0x08000000);
+        }
+        let total_bytes: Option<u64> = if let Ok(output) = head_cmd.output() {
+            let s = String::from_utf8_lossy(&output.stdout);
+            s.lines()
+                .filter_map(|line| {
+                    let lower = line.to_lowercase();
+                    if lower.starts_with("content-length:") {
+                        lower.strip_prefix("content-length:")
+                            .and_then(|v| v.trim().parse::<u64>().ok())
+                    } else {
+                        None
+                    }
+                })
+                .last()
+        } else {
+            None
+        };
+
+        // 2. Start curl download
+        let mut dl_cmd = std::process::Command::new("curl.exe");
+        dl_cmd.args([
+            "-L",
+            "-f",
+            "-s",
+            "-S",
+            "-o",
+            temp_download.to_string_lossy().as_ref(),
+            &download_url,
+        ]);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            dl_cmd.creation_flags(0x08000000);
+        }
+
+        let mut child = match dl_cmd.spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = app_handle.emit(
+                    "update-progress",
+                    UpdateProgressPayload {
+                        progress: 0.0,
+                        text: format!("Download error: {e}"),
+                        done: true,
+                        error: Some(format!("Failed to invoke curl: {e}")),
+                    },
+                );
+                return;
+            }
+        };
+
+        // 3. Monitor download progress by sampling file size
+        while let Ok(None) = child.try_wait() {
+            if let Ok(meta) = std::fs::metadata(&temp_download) {
+                let current_bytes = meta.len();
+                let current_mb = current_bytes as f64 / 1_048_576.0;
+                if let Some(total) = total_bytes {
+                    if total > 0 {
+                        let pct = (current_bytes as f32 / total as f32).min(0.98);
+                        let total_mb = total as f64 / 1_048_576.0;
+                        let text = format!("Downloading update: {:.1} MB / {:.1} MB ({:.0}%)", current_mb, total_mb, pct * 100.0);
+                        let _ = app_handle.emit(
+                            "update-progress",
+                            UpdateProgressPayload {
+                                progress: pct,
+                                text,
+                                done: false,
+                                error: None,
+                            },
+                        );
+                    }
+                } else {
+                    let text = format!("Downloading update: {:.1} MB", current_mb);
+                    let _ = app_handle.emit(
+                        "update-progress",
+                        UpdateProgressPayload {
+                            progress: 0.5,
+                            text,
+                            done: false,
+                            error: None,
+                        },
+                    );
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(150));
+        }
+
+        let status = match child.wait() {
+            Ok(s) => s,
+            Err(e) => {
+                let _ = std::fs::remove_file(&temp_download);
+                let _ = app_handle.emit(
+                    "update-progress",
+                    UpdateProgressPayload {
+                        progress: 0.0,
+                        text: format!("Download error: {e}"),
+                        done: true,
+                        error: Some(e.to_string()),
+                    },
+                );
+                return;
+            }
+        };
+
+        if !status.success() {
+            let _ = std::fs::remove_file(&temp_download);
+            let _ = app_handle.emit(
+                "update-progress",
+                UpdateProgressPayload {
+                    progress: 0.0,
+                    text: "Download failed or was interrupted".to_string(),
+                    done: true,
+                    error: Some("Download exited with error".to_string()),
+                },
+            );
+            return;
+        }
+
+        // Verify file exists and is plausible installer size (>5MB)
+        if let Ok(meta) = std::fs::metadata(&temp_download) {
+            if meta.len() < 5_000_000 {
+                let _ = std::fs::remove_file(&temp_download);
+                let _ = app_handle.emit(
+                    "update-progress",
+                    UpdateProgressPayload {
+                        progress: 0.0,
+                        text: "Downloaded file is corrupted or incomplete".to_string(),
+                        done: true,
+                        error: Some("File size too small".to_string()),
+                    },
+                );
+                return;
+            }
+        }
+
+        let _ = std::fs::remove_file(&target_installer);
+        if let Err(e) = std::fs::rename(&temp_download, &target_installer) {
+            let _ = app_handle.emit(
+                "update-progress",
+                UpdateProgressPayload {
+                    progress: 0.0,
+                    text: format!("Failed to save installer: {e}"),
+                    done: true,
+                    error: Some(e.to_string()),
+                },
+            );
+            return;
+        }
+
+        // 4. Emit 100% completion and restart status
+        let _ = app_handle.emit(
+            "update-progress",
+            UpdateProgressPayload {
+                progress: 1.0,
+                text: "Restarting and applying update...".to_string(),
+                done: true,
+                error: None,
+            },
+        );
+
+        std::thread::sleep(std::time::Duration::from_millis(600));
+
+        // 5. Launch NSIS installer in silent mode (/S) and exit current process
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            let mut inst = std::process::Command::new(&target_installer);
+            inst.arg("/S");
+            inst.creation_flags(0x08000000);
+            if inst.spawn().is_ok() {
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                std::process::exit(0);
+            }
+        }
+    });
+
+    Ok(())
+}
+
 pub fn open_url_in_browser(url: &str) -> Result<(), String> {
     #[cfg(windows)]
     {

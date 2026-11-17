@@ -126,13 +126,10 @@ pub fn filter_actions(files: &[impl AsRef<Path>], has_ffmpeg: bool) -> Vec<Conve
             ],
             FileCategory::Pdf => {
                 let all_locked = files.iter().all(|f| is_pdf_encrypted(f.as_ref()));
-                let all_unlocked = files.iter().all(|f| !is_pdf_encrypted(f.as_ref()));
                 let mut actions = Vec::with_capacity(8);
                 if files.len() > 1 {
                     if all_locked {
                         actions.push(ConversionAction::UnlockPdf);
-                    } else if all_unlocked {
-                        actions.push(ConversionAction::LockPdf);
                     }
                     actions.extend([
                         ConversionAction::MergePdf,

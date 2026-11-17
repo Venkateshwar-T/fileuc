@@ -1,5 +1,63 @@
 use fileuc_types::{ConvertError, ImageFormat};
+use image::ImageDecoder;
 use std::path::{Path, PathBuf};
+
+/// Reads an image from disk, inspecting EXIF orientation metadata tags and physically
+/// applying rotation/flip transformations to the raw pixel buffer before processing.
+/// This prevents converted images (WebP, PNG, JPEG, PDF) from appearing sideways or upside down.
+pub fn open_image_with_orientation(src: &Path) -> Result<image::DynamicImage, ConvertError> {
+    if !src.exists() {
+        return Err(ConvertError::SourceNotFound(src.to_string_lossy().to_string()));
+    }
+    let ext = src
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+
+    if ext == "heic" || ext == "heif" {
+        return crate::heic::decode_heic(src);
+    }
+
+    let file = match std::fs::File::open(src) {
+        Ok(f) => f,
+        Err(io_err) => {
+            if io_err.kind() == std::io::ErrorKind::PermissionDenied {
+                return Err(ConvertError::SourceLocked(src.to_string_lossy().to_string()));
+            }
+            return Err(ConvertError::IoError(io_err.to_string()));
+        }
+    };
+    let buf_reader = std::io::BufReader::new(file);
+
+    let reader = match image::ImageReader::new(buf_reader).with_guessed_format() {
+        Ok(r) => r,
+        Err(_) => {
+            return image::open(src)
+                .map_err(|e| ConvertError::ConverterError(format!("Failed to open image: {}", e)));
+        }
+    };
+
+    match reader.into_decoder() {
+        Ok(mut decoder) => {
+            let orientation = decoder.orientation().unwrap_or(image::metadata::Orientation::NoTransforms);
+            match image::DynamicImage::from_decoder(decoder) {
+                Ok(mut img) => {
+                    img.apply_orientation(orientation);
+                    Ok(img)
+                }
+                Err(_) => {
+                    image::open(src)
+                        .map_err(|e| ConvertError::ConverterError(format!("Failed to open image: {}", e)))
+                }
+            }
+        }
+        Err(_) => {
+            image::open(src)
+                .map_err(|e| ConvertError::ConverterError(format!("Failed to open image: {}", e)))
+        }
+    }
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct ImageOptions {
@@ -34,22 +92,7 @@ pub fn convert_image(
         return crate::svg::render_svg(src, format, opts.resize.map(|r| r.width));
     }
 
-    let mut img = if ext == "heic" || ext == "heif" {
-        crate::heic::decode_heic(src)?
-    } else {
-        match image::open(src) {
-            Ok(img) => img,
-            Err(e) => {
-                // Check if file is locked
-                if let Err(io_err) = std::fs::File::open(src) {
-                    if io_err.kind() == std::io::ErrorKind::PermissionDenied {
-                        return Err(ConvertError::SourceLocked(src.to_string_lossy().to_string()));
-                    }
-                }
-                return Err(ConvertError::ConverterError(format!("Failed to open image: {}", e)));
-            }
-        }
-    };
+    let mut img = open_image_with_orientation(src)?;
 
     if opts.grayscale {
         img = img.grayscale();
@@ -167,17 +210,7 @@ pub fn image_to_svg(src: &Path, output: &Path) -> Result<(), ConvertError> {
             (w, h, "image/webp", b)
         }
         _ => {
-            let img = match image::open(src) {
-                Ok(img) => img,
-                Err(e) => {
-                    if let Err(io_err) = std::fs::File::open(src) {
-                        if io_err.kind() == std::io::ErrorKind::PermissionDenied {
-                            return Err(ConvertError::SourceLocked(src.to_string_lossy().to_string()));
-                        }
-                    }
-                    return Err(ConvertError::ConverterError(format!("Failed to open image: {}", e)));
-                }
-            };
+            let img = open_image_with_orientation(src)?;
             let (w, h) = (img.width(), img.height());
             let mut buf = std::io::Cursor::new(Vec::new());
             img.write_to(&mut buf, image::ImageFormat::Png)

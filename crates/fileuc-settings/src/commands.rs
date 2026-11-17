@@ -154,3 +154,8 @@ pub fn check_for_updates(force: bool) -> Result<crate::updater::UpdateCheckRespo
 pub fn open_release_url(url: String) -> Result<(), String> {
     crate::updater::open_url_in_browser(&url)
 }
+
+#[tauri::command]
+pub fn install_update_now(app_handle: tauri::AppHandle, download_url: String) -> Result<(), String> {
+    crate::updater::download_and_install_update(app_handle, download_url)
+}

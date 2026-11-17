@@ -25,18 +25,6 @@
           <item.icon size={16} strokeWidth={2} class="shrink-0" />
           <span class="leading-none">{item.label}</span>
         </div>
-
-        {#if item.id === 'plugins' && store.uninstalledCount > 0}
-          <span
-            class="px-1.5 py-0.5 rounded-full text-[10px] font-semibold bg-opacity-20"
-            class:bg-accent={isActive}
-            class:text-accent={isActive}
-            class:bg-amber-500={!isActive}
-            class:text-amber-400={!isActive}
-          >
-            {store.uninstalledCount}
-          </span>
-        {/if}
       </button>
     {/each}
   </nav>
@@ -48,7 +36,7 @@
       type="button"
       onclick={() => store.checkForUpdates(true)}
       disabled={store.isCheckingUpdate}
-      class="flex items-center justify-between w-full px-3 py-2 rounded-lg border border-dark-border bg-dark-card hover:bg-white/5 transition-all text-xs font-medium cursor-pointer disabled:opacity-60 disabled:cursor-wait"
+      class="flex items-center justify-between w-full px-3 py-2 rounded-lg border border-dark-border bg-dark-card hover:bg-white/5 text-xs font-medium cursor-pointer disabled:opacity-60 disabled:cursor-wait"
       title="Check GitHub for FileUC updates"
     >
       <div class="flex items-center gap-2 truncate">

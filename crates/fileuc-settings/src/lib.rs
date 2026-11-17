@@ -130,6 +130,7 @@ pub fn run_tauri(initial_tab: i32) {
             commands::get_system_theme,
             commands::check_for_updates,
             commands::open_release_url,
+            commands::install_update_now,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

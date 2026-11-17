@@ -927,7 +927,13 @@ pub fn render_donut(
                 true,
             );
         } else {
-            let title_font_size = 16.5 * dpi_scale;
+            let mut title_font_size = 16.5 * dpi_scale;
+            let max_title_w = 88.0 * dpi_scale;
+            let measured_title_w = fonts.measure_text(&default_title_text, title_font_size, true);
+            if measured_title_w > max_title_w && measured_title_w > 0.0 {
+                let scale_ratio = (max_title_w / measured_title_w).max(0.65);
+                title_font_size *= scale_ratio;
+            }
             let sub_font_size = 14.5 * dpi_scale;
             let max_sub_w = 90.0 * dpi_scale;
 

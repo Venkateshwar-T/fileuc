@@ -35,8 +35,7 @@ pub fn images_to_pdf(images: &[PathBuf], output: &Path) -> Result<(), ConvertErr
             return Err(ConvertError::SourceNotFound(img_path.to_string_lossy().to_string()));
         }
 
-        let img = image::open(img_path)
-            .map_err(|e| ConvertError::ConverterError(format!("Failed to open image: {}", e)))?;
+        let img = crate::image::open_image_with_orientation(img_path)?;
         let (pw, ph) = (img.width(), img.height());
 
         let mut jpeg_bytes = Vec::new();
