@@ -127,12 +127,22 @@ pub fn find_7z() -> Option<PathBuf> {
 }
 
 /// Helper to parse real-time progress percentages from 7z CLI stdout with `-bsp1`.
-fn stream_7z_progress<R: Read>(reader: R, on_progress: &dyn Fn(f32)) {
+/// Returns `false` if cancelled cooperatively, `true` if completed.
+fn stream_7z_progress<R: Read>(
+    reader: R,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+    on_progress: &dyn Fn(f32),
+) -> bool {
     let mut reader = std::io::BufReader::with_capacity(4096, reader);
     let mut num_buf = Vec::with_capacity(8);
     let mut byte = [0u8; 1];
     let mut last_pct = 0;
     while let Ok(1) = reader.read(&mut byte) {
+        if let Some(c) = cancel {
+            if c.load(Ordering::Relaxed) {
+                return false;
+            }
+        }
         let b = byte[0];
         if b == b'%' {
             if let Ok(s) = std::str::from_utf8(&num_buf) {
@@ -156,6 +166,7 @@ fn stream_7z_progress<R: Read>(reader: R, on_progress: &dyn Fn(f32)) {
     if last_pct < 100 {
         on_progress(1.0);
     }
+    true
 }
 
 /// Recursively calculates the total uncompressed bytes across all input sources.
@@ -190,11 +201,12 @@ fn dir_total_bytes(dir: &Path) -> u64 {
     total
 }
 
-/// Read wrapper that emits cumulative progress as bytes are read.
+/// Read wrapper that emits cumulative progress as bytes are read, checking for cancellation.
 struct ProgressReader<'a, R> {
     inner: R,
     bytes: Arc<AtomicU64>,
     total: u64,
+    cancel: Option<&'a std::sync::atomic::AtomicBool>,
     callback: &'a dyn Fn(f32),
     last_reported: AtomicU32,
 }
@@ -204,12 +216,14 @@ impl<'a, R> ProgressReader<'a, R> {
         inner: R,
         bytes: Arc<AtomicU64>,
         total: u64,
+        cancel: Option<&'a std::sync::atomic::AtomicBool>,
         callback: &'a dyn Fn(f32),
     ) -> Self {
         Self {
             inner,
             bytes,
             total,
+            cancel,
             callback,
             last_reported: AtomicU32::new(0),
         }
@@ -218,6 +232,14 @@ impl<'a, R> ProgressReader<'a, R> {
 
 impl<'a, R: Read> Read for ProgressReader<'a, R> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if let Some(c) = self.cancel {
+            if c.load(Ordering::Relaxed) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Interrupted,
+                    "Cancelled by user",
+                ));
+            }
+        }
         let n = self.inner.read(buf)?;
         if n > 0 && self.total > 0 {
             let current = self.bytes.fetch_add(n as u64, Ordering::Relaxed) + n as u64;
@@ -258,10 +280,17 @@ fn run_7z_archive_command(
     format_arg: Option<&str>,
     sources: &[PathBuf],
     output: &Path,
+    cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
     on_progress: impl Fn(f32),
 ) -> Result<(), ConvertError> {
     if sources.is_empty() {
         return Err(ConvertError::ConverterError("No sources provided to compress".to_string()));
+    }
+
+    if let Some(ref c) = cancel {
+        if c.load(Ordering::Relaxed) {
+            return Err(ConvertError::ConverterError("Cancelled by user".to_string()));
+        }
     }
 
     for src in sources {
@@ -294,9 +323,10 @@ fn run_7z_archive_command(
     cmd.arg("a");
     if let Some(fmt) = format_arg {
         cmd.arg(fmt);
-    } else {
-        cmd.arg("-mx=1");
     }
+    // High-throughput fast compression (-mx=1) with multi-threading:
+    // Compresses 12GB+ files at disk I/O throughput (hundreds of MB/s) rather than CPU bottleneck
+    cmd.arg("-mx=1");
     cmd.arg("-y")
         .arg("-bsp1")
         .arg("-mmt=on")
@@ -329,13 +359,25 @@ fn run_7z_archive_command(
         ConvertError::ConverterError(format!("Failed to execute 7-Zip engine: {}", e))
     })?;
 
+    let mut was_cancelled = false;
     if let Some(stdout) = child.stdout.take() {
-        stream_7z_progress(stdout, &on_progress);
+        let cancel_ref = cancel.as_deref();
+        if !stream_7z_progress(stdout, cancel_ref, &on_progress) {
+            was_cancelled = true;
+            let _ = child.kill();
+        }
     }
 
     let status = child.wait().map_err(|e| {
         ConvertError::ConverterError(format!("Failed waiting for 7-Zip engine: {}", e))
     })?;
+
+    if was_cancelled {
+        if output.exists() {
+            let _ = std::fs::remove_file(output);
+        }
+        return Err(ConvertError::ConverterError("Cancelled by user".to_string()));
+    }
 
     if status.success() {
         on_progress(1.0);
@@ -353,25 +395,41 @@ fn run_7z_archive_command(
     }
 }
 
+pub fn create_zip_with_progress_and_cancel(
+    sources: &[PathBuf],
+    output: &Path,
+    cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
+    on_progress: impl Fn(f32),
+) -> Result<(), ConvertError> {
+    if find_7z().is_some() {
+        return run_7z_archive_command(Some("-tzip"), sources, output, cancel, on_progress);
+    }
+
+    create_zip_pure_rust(sources, output, cancel, on_progress)
+}
+
 pub fn create_zip_with_progress(
     sources: &[PathBuf],
     output: &Path,
     on_progress: impl Fn(f32),
 ) -> Result<(), ConvertError> {
-    if find_7z().is_some() {
-        return run_7z_archive_command(Some("-tzip"), sources, output, on_progress);
-    }
-
-    create_zip_pure_rust(sources, output, on_progress)
+    create_zip_with_progress_and_cancel(sources, output, None, on_progress)
 }
 
 fn create_zip_pure_rust(
     sources: &[PathBuf],
     output: &Path,
+    cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
     on_progress: impl Fn(f32),
 ) -> Result<(), ConvertError> {
     if sources.is_empty() {
         return Err(ConvertError::ConverterError("No sources provided to zip".to_string()));
+    }
+
+    if let Some(ref c) = cancel {
+        if c.load(Ordering::Relaxed) {
+            return Err(ConvertError::ConverterError("Cancelled by user".to_string()));
+        }
     }
 
     for src in sources {
@@ -390,8 +448,12 @@ fn create_zip_pure_rust(
     let file = File::create(output).map_err(|e| ConvertError::IoError(e.to_string()))?;
     let buffered = std::io::BufWriter::with_capacity(256 * 1024, file);
     let mut zip = ZipWriter::new(buffered);
+    // Explicitly enable Zip64 format for large multi-gigabyte (>= 4GB) archives:
     let options = SimpleFileOptions::default()
-        .compression_method(zip::CompressionMethod::Deflated);
+        .compression_method(zip::CompressionMethod::Deflated)
+        .large_file(true);
+
+    let cancel_ref = cancel.as_deref();
 
     for src in sources {
         if src.is_file() {
@@ -404,10 +466,20 @@ fn create_zip_pure_rust(
                 .map_err(|e| ConvertError::ConverterError(e.to_string()))?;
 
             let f = File::open(src).map_err(|e| ConvertError::IoError(e.to_string()))?;
-            let mut tracked = ProgressReader::new(f, bytes_read.clone(), total_bytes, &on_progress);
-            std::io::copy(&mut tracked, &mut zip).map_err(|e| ConvertError::IoError(e.to_string()))?;
+            let mut tracked = ProgressReader::new(f, bytes_read.clone(), total_bytes, cancel_ref, &on_progress);
+            if let Err(e) = std::io::copy(&mut tracked, &mut zip) {
+                if output.exists() {
+                    let _ = std::fs::remove_file(output);
+                }
+                return Err(ConvertError::IoError(e.to_string()));
+            }
         } else if src.is_dir() {
-            add_dir_to_zip_tracked(&mut zip, src, src, options, bytes_read.clone(), total_bytes, &on_progress)?;
+            if let Err(e) = add_dir_to_zip_tracked(&mut zip, src, src, options, bytes_read.clone(), total_bytes, cancel_ref, &on_progress) {
+                if output.exists() {
+                    let _ = std::fs::remove_file(output);
+                }
+                return Err(e);
+            }
         }
     }
 
@@ -427,6 +499,7 @@ fn add_dir_to_zip_tracked<W: Write + std::io::Seek>(
     options: SimpleFileOptions,
     bytes_read: Arc<AtomicU64>,
     total_bytes: u64,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
     progress_cb: &dyn Fn(f32),
 ) -> Result<(), ConvertError> {
     let entries = std::fs::read_dir(current_dir).map_err(|e| ConvertError::IoError(e.to_string()))?;
@@ -443,15 +516,14 @@ fn add_dir_to_zip_tracked<W: Write + std::io::Seek>(
             zip.start_file(relative, options)
                 .map_err(|e| ConvertError::ConverterError(e.to_string()))?;
             let f = File::open(&path).map_err(|e| ConvertError::IoError(e.to_string()))?;
-            let mut tracked = ProgressReader::new(f, bytes_read.clone(), total_bytes, progress_cb);
+            let mut tracked = ProgressReader::new(f, bytes_read.clone(), total_bytes, cancel, progress_cb);
             std::io::copy(&mut tracked, zip).map_err(|e| ConvertError::IoError(e.to_string()))?;
         } else if path.is_dir() {
             zip.add_directory(format!("{}/", relative), options)
                 .map_err(|e| ConvertError::ConverterError(e.to_string()))?;
-            add_dir_to_zip_tracked(zip, base_dir, &path, options, bytes_read.clone(), total_bytes, progress_cb)?;
+            add_dir_to_zip_tracked(zip, base_dir, &path, options, bytes_read.clone(), total_bytes, cancel, progress_cb)?;
         }
     }
-
     Ok(())
 }
 
@@ -526,12 +598,21 @@ pub fn extract_archive(src: &Path, output_dir: &Path) -> Result<(), ConvertError
     Ok(())
 }
 
+pub fn create_7z_with_progress_and_cancel(
+    sources: &[PathBuf],
+    output: &Path,
+    cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
+    on_progress: impl Fn(f32),
+) -> Result<(), ConvertError> {
+    run_7z_archive_command(None, sources, output, cancel, on_progress)
+}
+
 pub fn create_7z_with_progress(
     sources: &[PathBuf],
     output: &Path,
     on_progress: impl Fn(f32),
 ) -> Result<(), ConvertError> {
-    run_7z_archive_command(None, sources, output, on_progress)
+    create_7z_with_progress_and_cancel(sources, output, None, on_progress)
 }
 
 pub fn create_7z(sources: &[PathBuf], output: &Path) -> Result<(), ConvertError> {

@@ -1,9 +1,22 @@
 use fileuc_convert::archive::{
-    create_7z, create_7z_with_progress, create_zip, create_zip_with_progress, extract_archive,
-    find_7z,
+    create_7z, create_7z_with_progress, create_zip, create_zip_with_progress,
+    create_zip_with_progress_and_cancel, extract_archive, find_7z,
 };
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+
+#[test]
+fn test_zip_cancellation() {
+    let tmp = tempfile::tempdir().unwrap();
+    let f1 = tmp.path().join("large.bin");
+    std::fs::write(&f1, vec![b'Z'; 1024 * 1024]).unwrap();
+
+    let zip_path = tmp.path().join("cancelled.zip");
+    let cancel = Arc::new(AtomicBool::new(true)); // Pre-cancelled
+
+    let res = create_zip_with_progress_and_cancel(&[f1], &zip_path, Some(cancel), |_| {});
+    assert!(res.is_err(), "Expected cancelled archive operation to return Err");
+}
 
 #[test]
 fn zip_roundtrip() {

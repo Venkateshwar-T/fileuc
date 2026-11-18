@@ -1,8 +1,13 @@
 use crate::plugin_manager;
 use crate::store::{AppSettings, SettingsStore};
-use fileuc_types::IpcMessage;
+use fileuc_types::{ActiveConversionInfo, IpcMessage};
 use serde::Serialize;
 use tauri::Emitter;
+use windows::core::w;
+use windows::Win32::Foundation::CloseHandle;
+use windows::Win32::System::Memory::{
+    MapViewOfFile, OpenFileMappingW, UnmapViewOfFile, FILE_MAP_READ,
+};
 
 pub fn notify_daemon(msg: IpcMessage) {
     if let Ok(payload) = serde_json::to_vec(&msg) {
@@ -158,4 +163,67 @@ pub fn open_release_url(url: String) -> Result<(), String> {
 #[tauri::command]
 pub fn install_update_now(app_handle: tauri::AppHandle, download_url: String) -> Result<(), String> {
     crate::updater::download_and_install_update(app_handle, download_url)
+}
+
+#[tauri::command]
+pub fn get_active_conversion() -> Option<ActiveConversionInfo> {
+    unsafe {
+        let handle = match OpenFileMappingW(FILE_MAP_READ.0, false, w!("Local\\FileUC_Conversion_State")) {
+            Ok(h) => h,
+            Err(_) => return None,
+        };
+        let view = MapViewOfFile(handle, FILE_MAP_READ, 0, 0, 1024);
+        if view.Value.is_null() {
+            let _ = CloseHandle(handle);
+            return None;
+        }
+
+        let byte_ptr = view.Value as *const u8;
+        let magic = *(byte_ptr as *const u32);
+        if magic != 0x46494C45 {
+            let _ = UnmapViewOfFile(view);
+            let _ = CloseHandle(handle);
+            return None;
+        }
+
+        std::sync::atomic::fence(std::sync::atomic::Ordering::Acquire);
+        let is_active = *byte_ptr.add(4) == 1;
+        if !is_active {
+            let _ = UnmapViewOfFile(view);
+            let _ = CloseHandle(handle);
+            return None;
+        }
+
+        let progress_permille = *(byte_ptr.add(8) as *const u32);
+        let progress = (progress_permille as f32 / 1000.0).clamp(0.0, 1.0);
+
+        let action_len = (*(byte_ptr.add(12) as *const u32) as usize).min(32);
+        let action_slice = std::slice::from_raw_parts(byte_ptr.add(16), action_len);
+        let action_display = std::str::from_utf8(action_slice).unwrap_or("").to_string();
+
+        let eta_len = (*(byte_ptr.add(48) as *const u32) as usize).min(32);
+        let eta_slice = std::slice::from_raw_parts(byte_ptr.add(52), eta_len);
+        let eta_text = std::str::from_utf8(eta_slice).unwrap_or("").to_string();
+
+        let summary_len = (*(byte_ptr.add(84) as *const u32) as usize).min(424);
+        let summary_slice = std::slice::from_raw_parts(byte_ptr.add(88), summary_len);
+        let file_summary = std::str::from_utf8(summary_slice).unwrap_or("").to_string();
+
+        let _ = UnmapViewOfFile(view);
+        let _ = CloseHandle(handle);
+
+        Some(ActiveConversionInfo {
+            is_active: true,
+            file_summary,
+            action_display,
+            progress,
+            eta_text,
+        })
+    }
+}
+
+#[tauri::command]
+pub fn cancel_active_conversion() -> Result<(), String> {
+    notify_daemon(IpcMessage::CancelActiveConversion);
+    Ok(())
 }

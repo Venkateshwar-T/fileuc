@@ -1,7 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use fileuc_daemon::autostart::set_auto_start;
-use fileuc_daemon::dispatcher::{dispatch, ConversionRequest, ConversionResult};
+use fileuc_daemon::dispatcher::{dispatch_cancellable, ConversionRequest, ConversionResult};
 use fileuc_daemon::ipc::{send_message, start_server, IpcMessage};
 use fileuc_daemon::single_instance::acquire;
 use fileuc_hook::gesture::{GestureDetector, GestureEvent, Modifiers};
@@ -174,6 +174,8 @@ fn main() {
     let settings_store_ipc = settings_store.clone();
     let settings_changed_ipc = settings_changed.clone();
     let quit_flag = should_quit.clone();
+    let cancel_requested = Arc::new(AtomicBool::new(false));
+    let cancel_requested_ipc = cancel_requested.clone();
     let main_thread_id = unsafe { windows::Win32::System::Threading::GetCurrentThreadId() };
     let _server = start_server(pipe_name, move |msg| match msg {
         IpcMessage::OpenSettings => {
@@ -195,6 +197,14 @@ fn main() {
             st.service_enabled = enabled;
             let _ = settings_store_ipc.save(&st);
             settings_changed_ipc.store(true, Ordering::Release);
+        }
+        IpcMessage::CancelActiveConversion => {
+            cancel_requested_ipc.store(true, Ordering::SeqCst);
+            unsafe {
+                use windows::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_NULL};
+                use windows::Win32::Foundation::{WPARAM, LPARAM};
+                let _ = PostThreadMessageW(main_thread_id, WM_NULL, WPARAM(0), LPARAM(0));
+            }
         }
         IpcMessage::Quit => {
             quit_flag.store(true, Ordering::SeqCst);
@@ -262,7 +272,10 @@ fn main() {
     let mut cloudflare_tunnel: Option<fileuc_daemon::cloudflared::CloudflareTunnel> = None;
     let mut cloudflared_dl_rx: Option<mpsc::Receiver<fileuc_daemon::cloudflared::DownloadProgress>> = None;
     let mut share_server: Option<ShareServerHandle> = None;
-    let mut conversion_in_flight: Option<(JoinHandle<ConversionResult>, Arc<AtomicU32>)> = None;
+    let shared_conversion_state = Arc::new(fileuc_daemon::conversion_state::SharedConversionWriter::new());
+    let mut conversion_in_flight: Option<(JoinHandle<ConversionResult>, Arc<AtomicU32>, Arc<AtomicBool>)> = None;
+    let mut active_conversion_summary = String::new();
+    let mut active_conversion_action = String::new();
     let mut hud_center = hud.hud_center();
     let mut pending_drag_ended: Option<Instant> = None;
     let mut popup_drag: Option<PopupDragController> = None;
@@ -406,6 +419,17 @@ fn main() {
                 }
                 let _ = TranslateMessage(&msg);
                 DispatchMessageW(&msg);
+            }
+        }
+
+        // 1.5. Process IPC Cancellation Request
+        if cancel_requested.swap(false, Ordering::SeqCst) {
+            if let Some((_, _, ref cancel_flag)) = conversion_in_flight {
+                cancel_flag.store(true, Ordering::SeqCst);
+            }
+            shared_conversion_state.set_inactive();
+            if let Some(ref mut tracker) = progress_tracker {
+                tracker.mark_failure("Cancelled".to_string());
             }
         }
 
@@ -627,10 +651,18 @@ fn main() {
                                 start_win_y: hud.screen_y(),
                             });
                         }
-                    } else if progress_tracker.is_some() {
+                    } else if let Some(ref mut tracker) = progress_tracker {
                         let rel_x = (x - hud_center.0) as f32;
                         let rel_y = (y - hud_center.1) as f32;
-                        if fileuc_hud::renderer::hit_test_progress(rel_x, rel_y, hud.dpi_scale()) {
+                        let cx = hud.size() as f32 / 2.0;
+                        let cy = hud.size() as f32 / 2.0;
+                        if tracker.is_detailed() && tracker.hit_test_stop(rel_x, rel_y, cx, cy, hud.dpi_scale()) {
+                            if let Some((_, _, ref cancel_flag)) = conversion_in_flight {
+                                cancel_flag.store(true, Ordering::SeqCst);
+                            }
+                            shared_conversion_state.set_inactive();
+                            tracker.mark_failure("Cancelled".to_string());
+                        } else if fileuc_hud::renderer::hit_test_progress(rel_x, rel_y, hud.dpi_scale()) {
                             popup_drag = Some(PopupDragController {
                                 start_cursor_x: x,
                                 start_cursor_y: y,
@@ -798,6 +830,13 @@ fn main() {
                         if close_hov || tab_hov.is_some() || copy_hov || (card.tab == QrShareTab::Internet && !card.is_cloudflared_installed && dl_hov) {
                             is_hand = true;
                         }
+                    } else if let Some(ref tracker) = progress_tracker {
+                        if tracker.is_detailed() {
+                            let dpi_scale = hud.dpi_scale();
+                            if tracker.hit_test_stop(rel_x, rel_y, cx, cy, dpi_scale) {
+                                is_hand = true;
+                            }
+                        }
                     } else if donut_state.is_some() && progress_tracker.is_none() {
                         let dpi_scale = hud.dpi_scale();
                         let pop_out = 7.0 * dpi_scale;
@@ -818,13 +857,8 @@ fn main() {
                     }
 
                     unsafe {
-                        use windows::Win32::UI::WindowsAndMessaging::{LoadCursorW, SetCursor, IDC_ARROW, IDC_HAND, IDC_SIZEALL};
-                        if popup_drag.is_some() {
-                            if let Ok(cur) = LoadCursorW(None, IDC_SIZEALL) {
-                                SetCursor(cur);
-                                cursor_is_hand = false;
-                            }
-                        } else if is_hand {
+                        use windows::Win32::UI::WindowsAndMessaging::{LoadCursorW, SetCursor, IDC_ARROW, IDC_HAND};
+                        if is_hand {
                             if let Ok(cur) = LoadCursorW(None, IDC_HAND) {
                                 SetCursor(cur);
                                 cursor_is_hand = true;
@@ -1310,6 +1344,9 @@ fn main() {
                                             &mut share_server,
                                             &mut progress_tracker,
                                             &mut conversion_in_flight,
+                                            &shared_conversion_state,
+                                            &mut active_conversion_summary,
+                                            &mut active_conversion_action,
                                         );
                                     }
                                 }
@@ -1338,6 +1375,9 @@ fn main() {
                                 &mut share_server,
                                 &mut progress_tracker,
                                 &mut conversion_in_flight,
+                                &shared_conversion_state,
+                                &mut active_conversion_summary,
+                                &mut active_conversion_action,
                             );
                         }
                         _ => {
@@ -1404,6 +1444,9 @@ fn main() {
                                     &mut share_server,
                                     &mut progress_tracker,
                                     &mut conversion_in_flight,
+                                    &shared_conversion_state,
+                                    &mut active_conversion_summary,
+                                    &mut active_conversion_action,
                                 );
                                 triggered = true;
                             }
@@ -1485,18 +1528,30 @@ fn main() {
                     set_mouse_capture_rect(None);
                     reduce_size_card_state = None;
 
-                    let tracker = ProgressTracker::new();
+                    let is_detailed = settings.detailed_progress;
+                    let tracker = ProgressTracker::new_detailed(is_detailed);
                     progress_tracker = Some(tracker);
+                    let plate_dim = if is_detailed { 54.0 * hud.dpi_scale() } else { 44.0 * hud.dpi_scale() };
+                    let half = plate_dim as i32;
+                    set_mouse_capture_rect(Some((hud_center.0 - half, hud_center.1 - half, hud_center.0 + half, hud_center.1 + half)));
 
                     let progress_val = Arc::new(AtomicU32::new(0));
-                    let handle = fileuc_daemon::dispatcher::dispatch_reduce_size(
+                    let cancel_flag = Arc::new(AtomicBool::new(false));
+
+                    let summary = compute_files_summary(&files);
+                    active_conversion_summary = summary.clone();
+                    active_conversion_action = "Reduce Size".to_string();
+                    shared_conversion_state.update_active(&summary, "Reduce Size", 0.0, "Calculating...");
+
+                    let handle = fileuc_daemon::dispatcher::dispatch_reduce_size_cancellable(
                         files,
                         settings,
                         target,
+                        cancel_flag.clone(),
                         progress_val.clone(),
                     );
 
-                    conversion_in_flight = Some((handle, progress_val));
+                    conversion_in_flight = Some((handle, progress_val, cancel_flag));
                 } else {
                     reduce_size_card_dirty = true;
                 }
@@ -1532,13 +1587,21 @@ fn main() {
         }
 
         // 4. Update in-flight conversion progress
-        if let Some((ref handle, ref p_val)) = conversion_in_flight {
+        if let Some((ref handle, ref p_val, _)) = conversion_in_flight {
             let frac = p_val.load(Ordering::Relaxed) as f32 / 1000.0;
             if let Some(ref mut tracker) = progress_tracker {
                 tracker.update(frac);
+                let eta = tracker.eta_text();
+                shared_conversion_state.update_active(
+                    &active_conversion_summary,
+                    &active_conversion_action,
+                    tracker.shown_progress(),
+                    &eta,
+                );
             }
             if handle.is_finished() {
-                let (h, _) = conversion_in_flight.take().unwrap();
+                shared_conversion_state.set_inactive();
+                let (h, _, _) = conversion_in_flight.take().unwrap();
                 match h.join() {
                     Ok(res) => {
                         if let Some(ref mut tracker) = progress_tracker {
@@ -1769,6 +1832,7 @@ fn main() {
                 hud.repaint(&pixmap);
             }
             if tracker.fade_elapsed() {
+                shared_conversion_state.set_inactive();
                 progress_tracker = None;
                 set_mouse_capture_rect(None);
                 hud.hide();
@@ -1844,6 +1908,33 @@ fn compute_file_label(files: &[PathBuf]) -> Option<String> {
     }
 }
 
+fn compute_files_summary(files: &[PathBuf]) -> String {
+    if files.is_empty() {
+        return "Files".to_string();
+    }
+    if files.len() == 1 {
+        let path = &files[0];
+        if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
+            return name.to_string();
+        }
+        return "1 file".to_string();
+    }
+    let first_name = files[0]
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("file");
+    format!("{} files ({}, ...)", files.len(), first_name)
+}
+
+fn compute_action_display(action: ConversionAction) -> &'static str {
+    match action {
+        ConversionAction::CreateZip | ConversionAction::OneZip => "7zip",
+        ConversionAction::Create7z => "7zip",
+        ConversionAction::PdfOcr => "OCR",
+        _ => action.label(),
+    }
+}
+
 fn dispatch_action(
     action: ConversionAction,
     current_files: &mut Vec<PathBuf>,
@@ -1864,7 +1955,10 @@ fn dispatch_action(
     qr_card_state: &mut Option<QrCardState>,
     share_server: &mut Option<ShareServerHandle>,
     progress_tracker: &mut Option<ProgressTracker>,
-    conversion_in_flight: &mut Option<(JoinHandle<ConversionResult>, Arc<AtomicU32>)>,
+    conversion_in_flight: &mut Option<(JoinHandle<ConversionResult>, Arc<AtomicU32>, Arc<AtomicBool>)>,
+    shared_conversion_state: &Arc<fileuc_daemon::conversion_state::SharedConversionWriter>,
+    active_conversion_summary: &mut String,
+    active_conversion_action: &mut String,
 ) {
     if action == ConversionAction::OfficeGroup {
         // Parent category slice is an expandable container (DOCX / EXCEL).
@@ -1902,6 +1996,9 @@ fn dispatch_action(
         share_server,
         progress_tracker,
         conversion_in_flight,
+        shared_conversion_state,
+        active_conversion_summary,
+        active_conversion_action,
     );
 }
 
@@ -1922,7 +2019,10 @@ fn execute_conversion_action(
     qr_card_state: &mut Option<QrCardState>,
     share_server: &mut Option<ShareServerHandle>,
     progress_tracker: &mut Option<ProgressTracker>,
-    conversion_in_flight: &mut Option<(JoinHandle<ConversionResult>, Arc<AtomicU32>)>,
+    conversion_in_flight: &mut Option<(JoinHandle<ConversionResult>, Arc<AtomicU32>, Arc<AtomicBool>)>,
+    shared_conversion_state: &Arc<fileuc_daemon::conversion_state::SharedConversionWriter>,
+    active_conversion_summary: &mut String,
+    active_conversion_action: &mut String,
 ) {
     if action == ConversionAction::ReduceSize {
         let total_size_bytes: u64 = files.iter()
@@ -2042,28 +2142,38 @@ fn execute_conversion_action(
             }
         }
     } else {
-        let tracker = ProgressTracker::new();
+        let is_detailed = settings.detailed_progress;
+        let tracker = ProgressTracker::new_detailed(is_detailed);
         *progress_tracker = Some(tracker);
-        let half = (44.0 * dpi_scale) as i32;
+        let plate_dim = if is_detailed { 54.0 * dpi_scale } else { 44.0 * dpi_scale };
+        let half = plate_dim as i32;
         set_mouse_capture_rect(Some((hud_center.0 - half, hud_center.1 - half, hud_center.0 + half, hud_center.1 + half)));
         set_key_capture(false);
 
         let progress_val = Arc::new(AtomicU32::new(0));
         let p_clone = progress_val.clone();
+        let cancel_flag = Arc::new(AtomicBool::new(false));
 
-        let handle = dispatch(
+        let summary = compute_files_summary(&files);
+        let action_display = compute_action_display(action);
+        *active_conversion_summary = summary.clone();
+        *active_conversion_action = action_display.to_string();
+        shared_conversion_state.update_active(&summary, action_display, 0.0, "Calculating...");
+
+        let handle = dispatch_cancellable(
             ConversionRequest {
                 files,
                 action,
                 settings,
             },
+            cancel_flag.clone(),
             move |p| {
                 let int_val = (p * 1000.0) as u32;
                 p_clone.store(int_val, Ordering::Relaxed);
             },
         );
 
-        *conversion_in_flight = Some((handle, progress_val));
+        *conversion_in_flight = Some((handle, progress_val, cancel_flag));
     }
 }
 

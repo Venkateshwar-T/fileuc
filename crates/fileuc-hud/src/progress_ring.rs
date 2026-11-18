@@ -16,10 +16,17 @@ pub struct ProgressTracker {
     outcome_popped: bool,
     pending_success: bool,
     completed_at: Option<Instant>,
+    is_detailed: bool,
+    start_time: Instant,
+    smoothed_remaining_secs: f32,
 }
 
 impl ProgressTracker {
     pub fn new() -> Self {
+        Self::new_detailed(false)
+    }
+
+    pub fn new_detailed(is_detailed: bool) -> Self {
         let mut badge = Spring::new(0.0, 420.0, 16.0);
         badge.set_target(1.0);
         Self {
@@ -30,7 +37,18 @@ impl ProgressTracker {
             outcome_popped: false,
             pending_success: false,
             completed_at: None,
+            is_detailed,
+            start_time: Instant::now(),
+            smoothed_remaining_secs: 0.0,
         }
+    }
+
+    pub fn is_detailed(&self) -> bool {
+        self.is_detailed
+    }
+
+    pub fn set_detailed(&mut self, detailed: bool) {
+        self.is_detailed = detailed;
     }
 
     pub fn update(&mut self, fraction: f32) {
@@ -72,6 +90,49 @@ impl ProgressTracker {
         self.outcome_popped
     }
 
+    pub fn eta_text(&self) -> String {
+        let elapsed = self.start_time.elapsed().as_secs_f32();
+        let f = self.target_progress.max(self.shown_progress).clamp(0.0, 1.0);
+        if f < 0.02 || elapsed < 0.8 {
+            return "Calculating...".to_string();
+        }
+        if f >= 0.995 {
+            return "Finishing...".to_string();
+        }
+
+        let secs = if self.smoothed_remaining_secs > 0.0 {
+            self.smoothed_remaining_secs
+        } else {
+            let raw_rate = f / elapsed.max(0.1);
+            ((1.0 - f) / raw_rate.max(0.001)).max(0.0)
+        };
+
+        if secs < 1.0 {
+            "~1 sec".to_string()
+        } else if secs < 60.0 {
+            format!("~{:.0} sec", secs)
+        } else if secs < 3600.0 {
+            let mins = (secs / 60.0).round().max(1.0);
+            format!("~{:.0} min", mins)
+        } else {
+            let hrs = (secs / 3600.0).floor();
+            let mins = ((secs % 3600.0) / 60.0).round();
+            format!("~{:.0}h {:.0}m", hrs, mins)
+        }
+    }
+
+    pub fn hit_test_stop(&self, rel_x: f32, rel_y: f32, _cx: f32, _cy: f32, dpi_scale: f32) -> bool {
+        if !self.is_detailed {
+            return false;
+        }
+        // In detailed mode, STOP button is centered horizontally at rel_x = 0,
+        // vertically at rel_y = 22.0 * dpi_scale, width ~48px, height ~20px.
+        let stop_center_y = 22.0 * dpi_scale;
+        let half_w = 26.0 * dpi_scale;
+        let half_h = 12.0 * dpi_scale;
+        rel_x.abs() <= half_w && (rel_y - stop_center_y).abs() <= half_h
+    }
+
     pub fn tick(&mut self, dt: f32) -> bool {
         let mut animating = false;
 
@@ -95,16 +156,34 @@ impl ProgressTracker {
             }
         } else if matches!(self.state, ProgressState::Converting(_)) {
             // Active smooth progression while converting:
+            // Strictly follow real target_progress; never artificially fake-creep to 95%
             let diff = self.target_progress - self.shown_progress;
-            if diff > 0.001 {
+            if diff > 0.0001 {
                 // Adaptive catch-up: scales smoothly with jump distance for liquid flow
-                let track_rate = (diff * 5.0).clamp(0.20, 2.5);
+                let track_rate = (diff * 5.0).clamp(0.20, 3.5);
                 self.shown_progress = (self.shown_progress + track_rate * dt).min(self.target_progress);
                 animating = true;
-            } else if self.shown_progress < 0.95 {
-                // Continuous subtle forward momentum so the ring never sits dead/frozen
-                self.shown_progress = (self.shown_progress + 0.015 * dt).min(0.95);
+            } else if self.target_progress == 0.0 && self.shown_progress < 0.05 {
+                // Subtle initial startup indicator capped strictly at 5%, never 95%
+                self.shown_progress = (self.shown_progress + 0.015 * dt).min(0.05);
                 animating = true;
+            }
+
+            // Update smoothed ETA with monotonic countdown damping
+            let elapsed = self.start_time.elapsed().as_secs_f32();
+            let f = self.target_progress.max(self.shown_progress).clamp(0.0, 1.0);
+            if f >= 0.02 && elapsed >= 0.8 {
+                let raw_rate = f / elapsed;
+                let instant_rem = ((1.0 - f) / raw_rate.max(0.001)).max(0.0);
+                if self.smoothed_remaining_secs <= 0.0 {
+                    self.smoothed_remaining_secs = instant_rem;
+                } else {
+                    // Natural time countdown: decrease smoothed_remaining_secs by dt
+                    let counted_down = (self.smoothed_remaining_secs - dt).max(1.0);
+                    // Damped blend: if instant_rem increased (slowdown), blend very gently (5%); if decreased, blend faster (20%)
+                    let alpha = if instant_rem > counted_down { 0.05 } else { 0.20 };
+                    self.smoothed_remaining_secs = (1.0 - alpha) * counted_down + alpha * instant_rem;
+                }
             }
         }
 

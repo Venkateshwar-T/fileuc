@@ -1056,6 +1056,119 @@ pub fn hit_test_progress(rel_x: f32, rel_y: f32, dpi_scale: f32) -> bool {
     rel_x.abs() <= half_w && rel_y.abs() <= half_h
 }
 
+/// Traces a partial rounded rectangle perimeter starting from top-center (cx, cy - h/2) clockwise
+/// corresponding to progress fraction `progress` in [0.0, 1.0].
+fn push_rounded_square_progress_arc(
+    pb: &mut PathBuilder,
+    cx: f32,
+    cy: f32,
+    w: f32,
+    h: f32,
+    r: f32,
+    progress: f32,
+) {
+    let f = progress.clamp(0.0, 1.0);
+    if f <= 0.001 {
+        return;
+    }
+
+    let left = cx - w / 2.0;
+    let right = cx + w / 2.0;
+    let top = cy - h / 2.0;
+    let bottom = cy + h / 2.0;
+    let r = r.min(w / 2.0).min(h / 2.0);
+
+    let l_top_half = (w / 2.0 - r).max(0.0);
+    let l_vert = (h - 2.0 * r).max(0.0);
+    let l_horiz = (w - 2.0 * r).max(0.0);
+    let c_corner = std::f32::consts::FRAC_PI_2 * r;
+
+    let total_p = 2.0 * l_top_half + 2.0 * l_vert + l_horiz + 4.0 * c_corner;
+    let mut d = f * total_p;
+
+    pb.move_to(cx, top);
+
+    // 1. Top-right straight segment: from (cx, top) to (right - r, top)
+    if d <= l_top_half {
+        pb.line_to(cx + d, top);
+        return;
+    }
+    pb.line_to(right - r, top);
+    d -= l_top_half;
+
+    // Helper to draw partial or full corner arc
+    let draw_arc = |pb: &mut PathBuilder, ccx: f32, ccy: f32, start_angle: f32, rem_d: &mut f32| -> bool {
+        let arc_len = c_corner;
+        let arc_sweep = if *rem_d <= arc_len {
+            let frac = *rem_d / arc_len.max(0.001);
+            *rem_d = 0.0;
+            frac * std::f32::consts::FRAC_PI_2
+        } else {
+            *rem_d -= arc_len;
+            std::f32::consts::FRAC_PI_2
+        };
+
+        let steps = 8;
+        for i in 1..=steps {
+            let a = start_angle + arc_sweep * (i as f32 / steps as f32);
+            pb.line_to(ccx + r * a.cos(), ccy + r * a.sin());
+        }
+
+        *rem_d == 0.0
+    };
+
+    // 2. Top-right corner: center (right - r, top + r), -PI/2 to 0
+    if draw_arc(pb, right - r, top + r, -std::f32::consts::FRAC_PI_2, &mut d) {
+        return;
+    }
+
+    // 3. Right vertical: from (right, top + r) to (right, bottom - r)
+    if d <= l_vert {
+        pb.line_to(right, top + r + d);
+        return;
+    }
+    pb.line_to(right, bottom - r);
+    d -= l_vert;
+
+    // 4. Bottom-right corner: center (right - r, bottom - r), 0 to PI/2
+    if draw_arc(pb, right - r, bottom - r, 0.0, &mut d) {
+        return;
+    }
+
+    // 5. Bottom horizontal: from (right - r, bottom) to (left + r, bottom)
+    if d <= l_horiz {
+        pb.line_to(right - r - d, bottom);
+        return;
+    }
+    pb.line_to(left + r, bottom);
+    d -= l_horiz;
+
+    // 6. Bottom-left corner: center (left + r, bottom - r), PI/2 to PI
+    if draw_arc(pb, left + r, bottom - r, std::f32::consts::FRAC_PI_2, &mut d) {
+        return;
+    }
+
+    // 7. Left vertical: from (left, bottom - r) to (left, top + r)
+    if d <= l_vert {
+        pb.line_to(left, bottom - r - d);
+        return;
+    }
+    pb.line_to(left, top + r);
+    d -= l_vert;
+
+    // 8. Top-left corner: center (left + r, top + r), PI to 3*PI/2
+    if draw_arc(pb, left + r, top + r, std::f32::consts::PI, &mut d) {
+        return;
+    }
+
+    // 9. Top-left straight segment: from (left + r, top) to (cx, top)
+    if d <= l_top_half {
+        pb.line_to(left + r + d, top);
+        return;
+    }
+    pb.line_to(cx, top);
+}
+
 pub fn render_progress(
     tracker: &crate::progress_ring::ProgressTracker,
     theme: &Theme,
@@ -1084,14 +1197,20 @@ pub fn render_progress(
             let plate_h = 56.0 * dpi_scale + (line_count as f32) * 19.0 * dpi_scale;
             (plate_w, plate_h, true, wrapped)
         }
-        _ => (88.0 * dpi_scale, 88.0 * dpi_scale, false, Vec::new()),
+        _ => {
+            if tracker.is_detailed() {
+                (108.0 * dpi_scale, 108.0 * dpi_scale, false, Vec::new())
+            } else {
+                (88.0 * dpi_scale, 88.0 * dpi_scale, false, Vec::new())
+            }
+        }
     };
 
     let half_w = plate_w / 2.0;
     let half_h = plate_h / 2.0;
-    let corner_r = 18.0 * dpi_scale;
-    let track_radius = 35.0 * dpi_scale;
-    let stroke_w = 4.8 * dpi_scale;
+    let corner_r = if tracker.is_detailed() { 20.0 * dpi_scale } else { 18.0 * dpi_scale };
+    let track_radius = if tracker.is_detailed() { 44.0 * dpi_scale } else { 35.0 * dpi_scale };
+    let stroke_w = if tracker.is_detailed() { 4.5 * dpi_scale } else { 4.8 * dpi_scale };
 
     // 1. Draw Plate Soft Shadow
     for i in 1..=4 {
@@ -1144,10 +1263,17 @@ pub fn render_progress(
         pixmap.stroke_path(&plate_path, &border_paint, &border_stroke, Transform::identity(), None);
     }
 
-    // 3. Draw Circular Background Track (for non-failure progress)
+    // 3. Draw Background Track (for non-failure progress)
     if !is_failure {
         let mut bg_track_pb = PathBuilder::new();
-        bg_track_pb.push_circle(cx, cy, track_radius);
+        if tracker.is_detailed() {
+            let track_w = 88.0 * dpi_scale;
+            let track_h = 88.0 * dpi_scale;
+            let track_r = 14.0 * dpi_scale;
+            push_rounded_rect(&mut bg_track_pb, cx - track_w / 2.0, cy - track_h / 2.0, track_w, track_h, track_r);
+        } else {
+            bg_track_pb.push_circle(cx, cy, track_radius);
+        }
         if let Some(bg_track_path) = bg_track_pb.finish() {
             let mut bg_track_paint = Paint::default();
             if theme.is_dark {
@@ -1169,19 +1295,26 @@ pub fn render_progress(
         crate::progress_ring::ProgressState::Converting(_) | crate::progress_ring::ProgressState::Success => {
             let f = tracker.shown_progress().clamp(0.0, 1.0);
 
-            // Draw Green Circular Rounded Loader Progress Bar on Circumference
+            // Draw Green Loader Progress Bar on Perimeter (Rounded Square in Detailed mode, Circle in Standard mode)
             if f > 0.005 {
-                let arc_steps = (64.0 * f).ceil().max(2.0) as usize;
                 let mut arc_pb = PathBuilder::new();
-                for s in 0..=arc_steps {
-                    let t = s as f32 / arc_steps as f32;
-                    let a = t * f * TAU;
-                    let px = cx + track_radius * a.sin();
-                    let py = cy - track_radius * a.cos();
-                    if s == 0 {
-                        arc_pb.move_to(px, py);
-                    } else {
-                        arc_pb.line_to(px, py);
+                if tracker.is_detailed() {
+                    let track_w = 88.0 * dpi_scale;
+                    let track_h = 88.0 * dpi_scale;
+                    let track_r = 14.0 * dpi_scale;
+                    push_rounded_square_progress_arc(&mut arc_pb, cx, cy, track_w, track_h, track_r, f);
+                } else {
+                    let arc_steps = (64.0 * f).ceil().max(2.0) as usize;
+                    for s in 0..=arc_steps {
+                        let t = s as f32 / arc_steps as f32;
+                        let a = t * f * TAU;
+                        let px = cx + track_radius * a.sin();
+                        let py = cy - track_radius * a.cos();
+                        if s == 0 {
+                            arc_pb.move_to(px, py);
+                        } else {
+                            arc_pb.line_to(px, py);
+                        }
                     }
                 }
 
@@ -1224,8 +1357,71 @@ pub fn render_progress(
                         pixmap.stroke_path(&check_path, &check_paint, &check_stroke, Transform::identity(), None);
                     }
                 }
+            } else if tracker.is_detailed() {
+                // 1. Green percentage text
+                let pct_text = format!("{:.0}%", (f * 100.0).clamp(0.0, 100.0));
+                fonts.draw_text_centered(
+                    pixmap,
+                    &pct_text,
+                    cx,
+                    cy - 14.0 * dpi_scale,
+                    20.0 * dpi_scale,
+                    Color::from_rgba8(46, 213, 115, 255), // Emerald Green
+                    true,
+                );
+
+                // 2. Live approximate completion time text
+                let eta_str = tracker.eta_text();
+                let eta_color = if theme.is_dark {
+                    Color::from_rgba8(168, 168, 168, 255)
+                } else {
+                    Color::from_rgba8(100, 100, 100, 255)
+                };
+                fonts.draw_text_centered(
+                    pixmap,
+                    &eta_str,
+                    cx,
+                    cy + 4.5 * dpi_scale,
+                    12.5 * dpi_scale,
+                    eta_color,
+                    false,
+                );
+
+                // 3. Clickable STOP button
+                let stop_y = cy + 22.0 * dpi_scale;
+                let pill_w = 44.0 * dpi_scale;
+                let pill_h = 17.0 * dpi_scale;
+                let mut pill_pb = PathBuilder::new();
+                push_rounded_rect(
+                    &mut pill_pb,
+                    cx - pill_w / 2.0,
+                    stop_y - pill_h / 2.0 + 1.0 * dpi_scale,
+                    pill_w,
+                    pill_h,
+                    5.0 * dpi_scale,
+                );
+                if let Some(pill_path) = pill_pb.finish() {
+                    let mut pill_paint = Paint::default();
+                    if theme.is_dark {
+                        pill_paint.set_color_rgba8(239, 68, 68, 42);
+                    } else {
+                        pill_paint.set_color_rgba8(239, 68, 68, 28);
+                    }
+                    pill_paint.anti_alias = true;
+                    pixmap.fill_path(&pill_path, &pill_paint, FillRule::Winding, Transform::identity(), None);
+                }
+
+                fonts.draw_text_centered(
+                    pixmap,
+                    "STOP",
+                    cx,
+                    stop_y + 1.0 * dpi_scale,
+                    10.5 * dpi_scale,
+                    Color::from_rgba8(239, 68, 68, 255), // Vibrant red
+                    true,
+                );
             } else {
-                // Percentage in the center (Increased font size to 22px!)
+                // Standard mode: Percentage in the center
                 let pct_text = format!("{:.0}%", (f * 100.0).clamp(0.0, 100.0));
                 fonts.draw_text_centered(
                     pixmap,

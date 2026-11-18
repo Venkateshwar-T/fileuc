@@ -31,6 +31,7 @@ export interface AppSettings {
   hud_style: string;
   output_mode: string;
   pending_update?: PendingUpdate | null;
+  detailed_progress?: boolean;
 }
 
 export interface PluginState {
@@ -56,6 +57,7 @@ export function createSettingsStore() {
     service_enabled: true,
     hud_style: 'donut',
     output_mode: 'ask',
+    detailed_progress: false,
   });
 
   let ffmpeg = $state<PluginState>({
@@ -78,7 +80,7 @@ export function createSettingsStore() {
   let bannerDismissed = $state<boolean>(false);
   let isCheckingUpdate = $state<boolean>(false);
   let updateStatusMessage = $state<string>('');
-  let currentAppVersion = $state<string>('0.1.2');
+  let currentAppVersion = $state<string>('0.1.3');
   let isUpdating = $state<boolean>(false);
   let updateProgress = $state<number>(0);
   let updateProgressText = $state<string>('');

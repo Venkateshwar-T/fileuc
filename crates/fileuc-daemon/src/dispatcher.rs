@@ -24,9 +24,21 @@ pub fn dispatch(
     request: ConversionRequest,
     on_progress: impl Fn(f32) + Send + 'static,
 ) -> JoinHandle<ConversionResult> {
+    dispatch_cancellable(
+        request,
+        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        on_progress,
+    )
+}
+
+pub fn dispatch_cancellable(
+    request: ConversionRequest,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    on_progress: impl Fn(f32) + Send + 'static,
+) -> JoinHandle<ConversionResult> {
     std::thread::spawn(move || {
         let mut result = ConversionResult::default();
-        if request.files.is_empty() {
+        if request.files.is_empty() || cancel.load(std::sync::atomic::Ordering::Relaxed) {
             on_progress(1.0);
             return result;
         }
@@ -48,7 +60,7 @@ pub fn dispatch(
                     _ => unreachable!(),
                 };
                 let opts = ImageOptions::default();
-                process_each_file(&request.files, &request.settings, &on_progress, &mut result, |file| {
+                process_each_file(&request.files, &request.settings, &cancel, &on_progress, &mut result, |file| {
                     convert_image(file, fmt, &opts)
                 });
             }
@@ -57,7 +69,7 @@ pub fn dispatch(
                     grayscale: true,
                     ..Default::default()
                 };
-                process_each_file(&request.files, &request.settings, &on_progress, &mut result, |file| {
+                process_each_file(&request.files, &request.settings, &cancel, &on_progress, &mut result, |file| {
                     convert_image(file, ImageFormat::Png, &opts)
                 });
             }
@@ -66,57 +78,57 @@ pub fn dispatch(
                     custom_ext: Some("jpeg"),
                     ..Default::default()
                 };
-                process_each_file(&request.files, &request.settings, &on_progress, &mut result, |file| {
+                process_each_file(&request.files, &request.settings, &cancel, &on_progress, &mut result, |file| {
                     convert_image(file, ImageFormat::Jpeg, &opts)
                 });
             }
             ConversionAction::ToSvg => {
-                process_with_resolved_output(&request.files, "svg", &request.settings, &on_progress, &mut result, |src, dst| {
+                process_with_resolved_output(&request.files, "svg", &request.settings, &cancel, &on_progress, &mut result, |src, dst| {
                     fileuc_convert::image::image_to_svg(src, dst)
                 });
             }
             ConversionAction::DocToPdf => {
-                process_with_resolved_output(&request.files, "pdf", &request.settings, &on_progress, &mut result, |src, dst| {
+                process_with_resolved_output(&request.files, "pdf", &request.settings, &cancel, &on_progress, &mut result, |src, dst| {
                     fileuc_convert::doc::doc_to_pdf(src, dst)
                 });
             }
             ConversionAction::PdfToDocx => {
-                process_with_resolved_output(&request.files, "docx", &request.settings, &on_progress, &mut result, |src, dst| {
+                process_with_resolved_output(&request.files, "docx", &request.settings, &cancel, &on_progress, &mut result, |src, dst| {
                     fileuc_convert::doc::pdf_to_docx(src, dst)
                 });
             }
             ConversionAction::PptxToPdf => {
-                process_with_resolved_output(&request.files, "pdf", &request.settings, &on_progress, &mut result, |src, dst| {
+                process_with_resolved_output(&request.files, "pdf", &request.settings, &cancel, &on_progress, &mut result, |src, dst| {
                     fileuc_convert::pptx::pptx_to_pdf(src, dst)
                 });
             }
             ConversionAction::MdToPdf => {
-                process_with_resolved_output(&request.files, "pdf", &request.settings, &on_progress, &mut result, |src, dst| {
+                process_with_resolved_output(&request.files, "pdf", &request.settings, &cancel, &on_progress, &mut result, |src, dst| {
                     fileuc_convert::text::md_to_pdf(src, dst)
                 });
             }
             ConversionAction::TxtToPdf => {
-                process_with_resolved_output(&request.files, "pdf", &request.settings, &on_progress, &mut result, |src, dst| {
+                process_with_resolved_output(&request.files, "pdf", &request.settings, &cancel, &on_progress, &mut result, |src, dst| {
                     fileuc_convert::text::txt_to_pdf(src, dst)
                 });
             }
             ConversionAction::HtmlToPdf => {
-                process_with_resolved_output(&request.files, "pdf", &request.settings, &on_progress, &mut result, |src, dst| {
+                process_with_resolved_output(&request.files, "pdf", &request.settings, &cancel, &on_progress, &mut result, |src, dst| {
                     fileuc_convert::text::html_to_pdf(src, dst)
                 });
             }
             ConversionAction::ExcelToPdf => {
-                process_with_resolved_output(&request.files, "pdf", &request.settings, &on_progress, &mut result, |src, dst| {
+                process_with_resolved_output(&request.files, "pdf", &request.settings, &cancel, &on_progress, &mut result, |src, dst| {
                     fileuc_convert::excel::excel_to_pdf(src, dst)
                 });
             }
             ConversionAction::PdfToExcel => {
-                process_with_resolved_output(&request.files, "xlsx", &request.settings, &on_progress, &mut result, |src, dst| {
+                process_with_resolved_output(&request.files, "xlsx", &request.settings, &cancel, &on_progress, &mut result, |src, dst| {
                     fileuc_convert::excel::pdf_to_excel(src, dst)
                 });
             }
             ConversionAction::PdfOcr => {
-                process_with_resolved_output(&request.files, "pdf", &request.settings, &on_progress, &mut result, |src, dst| {
+                process_with_resolved_output(&request.files, "pdf", &request.settings, &cancel, &on_progress, &mut result, |src, dst| {
                     fileuc_convert::ocr_searchable::pdf_to_searchable_pdf(src, dst)
                 });
             }
@@ -128,22 +140,22 @@ pub fn dispatch(
                     }),
                     ..Default::default()
                 };
-                process_each_file(&request.files, &request.settings, &on_progress, &mut result, |file| {
+                process_each_file(&request.files, &request.settings, &cancel, &on_progress, &mut result, |file| {
                     convert_image(file, ImageFormat::Png, &opts)
                 });
             }
             ConversionAction::SvgToPng => {
-                process_each_file(&request.files, &request.settings, &on_progress, &mut result, |file| {
+                process_each_file(&request.files, &request.settings, &cancel, &on_progress, &mut result, |file| {
                     fileuc_convert::svg::render_svg(file, ImageFormat::Png, None)
                 });
             }
             ConversionAction::SvgToJpg => {
-                process_each_file(&request.files, &request.settings, &on_progress, &mut result, |file| {
+                process_each_file(&request.files, &request.settings, &cancel, &on_progress, &mut result, |file| {
                     fileuc_convert::svg::render_svg(file, ImageFormat::Jpeg, None)
                 });
             }
             ConversionAction::SvgToWebp => {
-                process_each_file(&request.files, &request.settings, &on_progress, &mut result, |file| {
+                process_each_file(&request.files, &request.settings, &cancel, &on_progress, &mut result, |file| {
                     fileuc_convert::svg::render_svg(file, ImageFormat::WebP, None)
                 });
             }
@@ -153,10 +165,21 @@ pub fn dispatch(
                 let out_pdf = fileuc_convert::output::resolve_output_path(first, "pdf");
                 match images_to_pdf(&request.files, &out_pdf) {
                     Ok(()) => {
+                        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                            if out_pdf.exists() {
+                                let _ = std::fs::remove_file(&out_pdf);
+                            }
+                            return result;
+                        }
                         let final_out = apply_output_mode(out_pdf, &request.settings.output_mode);
                         result.outputs.push(final_out);
                     }
-                    Err(e) => result.errors.push((first.clone(), e)),
+                    Err(e) => {
+                        if out_pdf.exists() {
+                            let _ = std::fs::remove_file(&out_pdf);
+                        }
+                        result.errors.push((first.clone(), e));
+                    }
                 }
                 on_progress(1.0);
             }
@@ -166,10 +189,21 @@ pub fn dispatch(
                 let out_pdf = fileuc_convert::output::resolve_suffixed_output_path(first, "_merged", "pdf", None);
                 match merge_pdfs(&request.files, &out_pdf) {
                     Ok(()) => {
+                        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                            if out_pdf.exists() {
+                                let _ = std::fs::remove_file(&out_pdf);
+                            }
+                            return result;
+                        }
                         let final_out = apply_output_mode(out_pdf, &request.settings.output_mode);
                         result.outputs.push(final_out);
                     }
-                    Err(e) => result.errors.push((first.clone(), e)),
+                    Err(e) => {
+                        if out_pdf.exists() {
+                            let _ = std::fs::remove_file(&out_pdf);
+                        }
+                        result.errors.push((first.clone(), e));
+                    }
                 }
                 on_progress(1.0);
             }
@@ -227,19 +261,19 @@ pub fn dispatch(
                 }
             }
             ConversionAction::CompressPdf => {
-                process_with_resolved_output(&request.files, "pdf", &request.settings, &on_progress, &mut result, |src, dst| {
+                process_with_resolved_output(&request.files, "pdf", &request.settings, &cancel, &on_progress, &mut result, |src, dst| {
                     compress_pdf(src, dst)
                 });
             }
             ConversionAction::LockPdf => {
-                process_each_file(&request.files, &request.settings, &on_progress, &mut result, |_file| {
+                process_each_file(&request.files, &request.settings, &cancel, &on_progress, &mut result, |_file| {
                     Err(ConvertError::ConverterError(
                         "LockPdf requires interactive user password specification".to_string(),
                     ))
                 });
             }
             ConversionAction::UnlockPdf => {
-                process_each_file(&request.files, &request.settings, &on_progress, &mut result, |file| {
+                process_each_file(&request.files, &request.settings, &cancel, &on_progress, &mut result, |file| {
                     let out_pdf = fileuc_convert::output::resolve_suffixed_output_path(file, "_unlocked", "pdf", Some("_locked"));
                     match fileuc_convert::pdf::unlock_pdf(file, None, &out_pdf)? {
                         true => Ok(out_pdf),
@@ -252,33 +286,65 @@ pub fn dispatch(
             ConversionAction::CreateZip | ConversionAction::OneZip => {
                 let first = &request.files[0];
                 let out_zip = fileuc_convert::output::resolve_suffixed_output_path(first, "_zipped", "zip", None);
-                match fileuc_convert::archive::create_zip_with_progress(&request.files, &out_zip, |p| {
-                    on_progress(p);
-                }) {
+                match fileuc_convert::archive::create_zip_with_progress_and_cancel(
+                    &request.files,
+                    &out_zip,
+                    Some(cancel.clone()),
+                    |p| {
+                        on_progress(p);
+                    },
+                ) {
                     Ok(()) => {
+                        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                            if out_zip.exists() {
+                                let _ = std::fs::remove_file(&out_zip);
+                            }
+                            return result;
+                        }
                         let final_out = apply_output_mode(out_zip, &request.settings.output_mode);
                         result.outputs.push(final_out);
                     }
-                    Err(e) => result.errors.push((first.clone(), e)),
+                    Err(e) => {
+                        if out_zip.exists() {
+                            let _ = std::fs::remove_file(&out_zip);
+                        }
+                        result.errors.push((first.clone(), e));
+                    }
                 }
                 on_progress(1.0);
             }
             ConversionAction::Create7z => {
                 let first = &request.files[0];
                 let out_7z = fileuc_convert::output::resolve_suffixed_output_path(first, "_zipped", "7z", None);
-                match fileuc_convert::archive::create_7z_with_progress(&request.files, &out_7z, |p| {
-                    on_progress(p);
-                }) {
+                match fileuc_convert::archive::create_7z_with_progress_and_cancel(
+                    &request.files,
+                    &out_7z,
+                    Some(cancel.clone()),
+                    |p| {
+                        on_progress(p);
+                    },
+                ) {
                     Ok(()) => {
+                        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                            if out_7z.exists() {
+                                let _ = std::fs::remove_file(&out_7z);
+                            }
+                            return result;
+                        }
                         let final_out = apply_output_mode(out_7z, &request.settings.output_mode);
                         result.outputs.push(final_out);
                     }
-                    Err(e) => result.errors.push((first.clone(), e)),
+                    Err(e) => {
+                        if out_7z.exists() {
+                            let _ = std::fs::remove_file(&out_7z);
+                        }
+                        result.errors.push((first.clone(), e));
+                    }
                 }
                 on_progress(1.0);
             }
             ConversionAction::ExtractArchive => {
-                process_each_file(&request.files, &request.settings, &on_progress, &mut result, |file| {
+                process_each_file(&request.files, &request.settings, &cancel, &on_progress, &mut result, |file| {
                     let parent = file.parent().unwrap_or_else(|| Path::new(""));
                     let extract_dir = parent.join(
                         file.file_stem()
@@ -292,19 +358,19 @@ pub fn dispatch(
             }
             ConversionAction::VideoToGif => {
                 let ffmpeg = find_ffmpeg().unwrap_or_else(|| PathBuf::from("ffmpeg"));
-                process_with_resolved_output(&request.files, "gif", &request.settings, &on_progress, &mut result, |src, dst| {
+                process_with_resolved_output(&request.files, "gif", &request.settings, &cancel, &on_progress, &mut result, |src, dst| {
                     video_to_gif(&ffmpeg, src, dst)
                 });
             }
             ConversionAction::VideoToMp3 => {
                 let ffmpeg = find_ffmpeg().unwrap_or_else(|| PathBuf::from("ffmpeg"));
-                process_with_resolved_output(&request.files, "mp3", &request.settings, &on_progress, &mut result, |src, dst| {
+                process_with_resolved_output(&request.files, "mp3", &request.settings, &cancel, &on_progress, &mut result, |src, dst| {
                     extract_audio(&ffmpeg, src, dst)
                 });
             }
             ConversionAction::CompressVideo => {
                 let ffmpeg = find_ffmpeg().unwrap_or_else(|| PathBuf::from("ffmpeg"));
-                process_each_file(&request.files, &request.settings, &on_progress, &mut result, |file| {
+                process_each_file(&request.files, &request.settings, &cancel, &on_progress, &mut result, |file| {
                     let ext = file.extension().unwrap_or_default().to_string_lossy();
                     let out_vid = fileuc_convert::output::resolve_output_path(file, &ext);
                     compress_video(&ffmpeg, file, &out_vid)?;
@@ -312,7 +378,7 @@ pub fn dispatch(
                 });
             }
             ConversionAction::ToHtml => {
-                process_with_resolved_output(&request.files, "html", &request.settings, &on_progress, &mut result, |src, dst| {
+                process_with_resolved_output(&request.files, "html", &request.settings, &cancel, &on_progress, &mut result, |src, dst| {
                     let ext = src
                         .extension()
                         .and_then(|s| s.to_str())
@@ -326,47 +392,47 @@ pub fn dispatch(
                 });
             }
             ConversionAction::XlsxToCsv => {
-                process_with_resolved_output(&request.files, "csv", &request.settings, &on_progress, &mut result, |src, dst| {
+                process_with_resolved_output(&request.files, "csv", &request.settings, &cancel, &on_progress, &mut result, |src, dst| {
                     fileuc_convert::data::xlsx_to_csv(src, dst)
                 });
             }
             ConversionAction::XlsxToJson => {
-                process_with_resolved_output(&request.files, "json", &request.settings, &on_progress, &mut result, |src, dst| {
+                process_with_resolved_output(&request.files, "json", &request.settings, &cancel, &on_progress, &mut result, |src, dst| {
                     fileuc_convert::data::xlsx_to_json(src, dst)
                 });
             }
             ConversionAction::CsvToXlsx => {
-                process_with_resolved_output(&request.files, "xlsx", &request.settings, &on_progress, &mut result, |src, dst| {
+                process_with_resolved_output(&request.files, "xlsx", &request.settings, &cancel, &on_progress, &mut result, |src, dst| {
                     fileuc_convert::data::csv_to_xlsx(src, dst)
                 });
             }
             ConversionAction::CsvToJson => {
-                process_with_resolved_output(&request.files, "json", &request.settings, &on_progress, &mut result, |src, dst| {
+                process_with_resolved_output(&request.files, "json", &request.settings, &cancel, &on_progress, &mut result, |src, dst| {
                     fileuc_convert::data::csv_to_json(src, dst)
                 });
             }
             ConversionAction::JsonToXlsx => {
-                process_with_resolved_output(&request.files, "xlsx", &request.settings, &on_progress, &mut result, |src, dst| {
+                process_with_resolved_output(&request.files, "xlsx", &request.settings, &cancel, &on_progress, &mut result, |src, dst| {
                     fileuc_convert::data::json_to_xlsx(src, dst)
                 });
             }
             ConversionAction::JsonToCsv => {
-                process_with_resolved_output(&request.files, "csv", &request.settings, &on_progress, &mut result, |src, dst| {
+                process_with_resolved_output(&request.files, "csv", &request.settings, &cancel, &on_progress, &mut result, |src, dst| {
                     fileuc_convert::data::json_to_csv(src, dst)
                 });
             }
             ConversionAction::MdToTxt => {
-                process_with_resolved_output(&request.files, "txt", &request.settings, &on_progress, &mut result, |src, dst| {
+                process_with_resolved_output(&request.files, "txt", &request.settings, &cancel, &on_progress, &mut result, |src, dst| {
                     fileuc_convert::text::markdown_to_text(src, dst)
                 });
             }
             ConversionAction::TxtToMd => {
-                process_with_resolved_output(&request.files, "md", &request.settings, &on_progress, &mut result, |src, dst| {
+                process_with_resolved_output(&request.files, "md", &request.settings, &cancel, &on_progress, &mut result, |src, dst| {
                     fileuc_convert::text::text_to_markdown(src, dst)
                 });
             }
             ConversionAction::StripMetadata => {
-                process_each_file(&request.files, &request.settings, &on_progress, &mut result, |file| {
+                process_each_file(&request.files, &request.settings, &cancel, &on_progress, &mut result, |file| {
                     fileuc_convert::metadata_strip::strip_metadata(file, None)
                 });
             }
@@ -384,7 +450,7 @@ pub fn dispatch(
                     _ => "mp3",
                 };
                 if let Some(ffmpeg) = fileuc_convert::media::find_ffmpeg() {
-                    process_with_resolved_output(&request.files, target_ext, &request.settings, &on_progress, &mut result, |src, dst| {
+                    process_with_resolved_output(&request.files, target_ext, &request.settings, &cancel, &on_progress, &mut result, |src, dst| {
                         fileuc_convert::media::convert_audio(&ffmpeg, src, dst, target_ext)
                     });
                 } else {
@@ -394,7 +460,7 @@ pub fn dispatch(
                 }
             }
             ConversionAction::OfficeGroup => {
-                process_with_resolved_output(&request.files, "docx", &request.settings, &on_progress, &mut result, |src, dst| {
+                process_with_resolved_output(&request.files, "docx", &request.settings, &cancel, &on_progress, &mut result, |src, dst| {
                     fileuc_convert::doc::pdf_to_docx(src, dst)
                 });
             }
@@ -408,6 +474,7 @@ pub fn dispatch(
 fn process_each_file<F>(
     files: &[PathBuf],
     settings: &AppSettings,
+    cancel: &std::sync::atomic::AtomicBool,
     on_progress: &(impl Fn(f32) + ?Sized),
     result: &mut ConversionResult,
     mut convert_fn: F,
@@ -416,13 +483,25 @@ fn process_each_file<F>(
 {
     let total = files.len().max(1) as f32;
     for (i, file) in files.iter().enumerate() {
+        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            break;
+        }
         on_progress(i as f32 / total);
         match convert_fn(file) {
             Ok(out) => {
+                if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                    if out.exists() {
+                        let _ = std::fs::remove_file(&out);
+                    }
+                    break;
+                }
                 let final_out = apply_output_mode(out, &settings.output_mode);
                 result.outputs.push(final_out);
             }
             Err(e) => result.errors.push((file.clone(), e)),
+        }
+        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            break;
         }
         on_progress((i + 1) as f32 / total);
     }
@@ -432,13 +511,14 @@ fn process_with_resolved_output<F>(
     files: &[PathBuf],
     ext: &str,
     settings: &AppSettings,
+    cancel: &std::sync::atomic::AtomicBool,
     on_progress: &(impl Fn(f32) + ?Sized),
     result: &mut ConversionResult,
     mut convert_fn: F,
 ) where
     F: FnMut(&Path, &Path) -> Result<(), ConvertError>,
 {
-    process_each_file(files, settings, on_progress, result, |file| {
+    process_each_file(files, settings, cancel, on_progress, result, |file| {
         let out_path = match &settings.output_mode {
             OutputMode::NextToOriginal => fileuc_convert::output::resolve_output_path(file, ext),
             OutputMode::CustomFolder(folder) => {
@@ -532,14 +612,39 @@ pub fn dispatch_reduce_size(
     target_bytes: u64,
     progress_val: Arc<std::sync::atomic::AtomicU32>,
 ) -> JoinHandle<ConversionResult> {
+    dispatch_reduce_size_cancellable(
+        files,
+        settings,
+        target_bytes,
+        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        progress_val,
+    )
+}
+
+pub fn dispatch_reduce_size_cancellable(
+    files: Vec<PathBuf>,
+    settings: Arc<AppSettings>,
+    target_bytes: u64,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    progress_val: Arc<std::sync::atomic::AtomicU32>,
+) -> JoinHandle<ConversionResult> {
     std::thread::spawn(move || {
         progress_val.store(200, std::sync::atomic::Ordering::Relaxed);
         let mut outputs = Vec::new();
         let mut errors = Vec::new();
         let total = files.len();
         for (idx, src_file) in files.into_iter().enumerate() {
+            if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                break;
+            }
             match fileuc_convert::size_reducer::reduce_size(&src_file, None, target_bytes) {
                 Ok(out_path) => {
+                    if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                        if out_path.exists() {
+                            let _ = std::fs::remove_file(&out_path);
+                        }
+                        break;
+                    }
                     let final_out = apply_output_mode(out_path, &settings.output_mode);
                     outputs.push(final_out);
                 }
@@ -547,10 +652,15 @@ pub fn dispatch_reduce_size(
                     errors.push((src_file, e));
                 }
             }
+            if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                break;
+            }
             let progress = ((idx + 1) as f32 / total as f32) * 800.0 + 200.0;
             progress_val.store(progress as u32, std::sync::atomic::Ordering::Relaxed);
         }
-        progress_val.store(1000, std::sync::atomic::Ordering::Relaxed);
+        if !cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            progress_val.store(1000, std::sync::atomic::Ordering::Relaxed);
+        }
         ConversionResult { outputs, errors }
     })
 }

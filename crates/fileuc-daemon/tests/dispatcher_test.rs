@@ -312,3 +312,33 @@ fn test_dispatch_merge_pdfs_named_with_merged_suffix() {
     assert!(result.outputs[0].exists());
     assert_eq!(result.outputs[0].file_name().unwrap(), "DocA_merged.pdf");
 }
+
+#[test]
+fn test_dispatch_cancellable_aborts_early() {
+    use fileuc_daemon::dispatcher::dispatch_cancellable;
+    use std::sync::atomic::AtomicBool;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let mut files = Vec::new();
+    for i in 0..10 {
+        let p = tmp.path().join(format!("file_{}.png", i));
+        image::RgbaImage::new(10, 10).save(&p).unwrap();
+        files.push(p);
+    }
+
+    let settings = Arc::new(AppSettings::default());
+    let cancel = Arc::new(AtomicBool::new(true)); // Pre-cancelled
+
+    let handle = dispatch_cancellable(
+        ConversionRequest {
+            files,
+            action: ConversionAction::ToJpg,
+            settings,
+        },
+        cancel,
+        |_| {},
+    );
+
+    let result = handle.join().unwrap();
+    assert_eq!(result.outputs.len(), 0);
+}

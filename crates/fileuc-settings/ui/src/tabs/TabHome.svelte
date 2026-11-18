@@ -1,8 +1,37 @@
 <script lang="ts">
+  import { onMount, onDestroy } from 'svelte';
+  import { invoke } from '@tauri-apps/api/core';
   import { store } from '../stores/settings.svelte';
   import Keycap from '../components/Keycap.svelte';
   import Card from '../components/Card.svelte';
+  import ActiveConversionBar, { type ActiveConversionInfo } from '../components/ActiveConversionBar.svelte';
   import { Image, FileText, FileArchive, Film, Archive, Smartphone } from 'lucide-svelte';
+
+  let activeConversion = $state<ActiveConversionInfo | null>(null);
+  let pollInterval: ReturnType<typeof setInterval> | null = null;
+
+  onMount(() => {
+    // Zero-overhead live conversion polling: active only while the Home tab is mounted
+    pollInterval = setInterval(async () => {
+      try {
+        const info = await invoke<ActiveConversionInfo | null>('get_active_conversion');
+        if (info && info.is_active) {
+          activeConversion = info;
+        } else {
+          activeConversion = null;
+        }
+      } catch {
+        activeConversion = null;
+      }
+    }, 150);
+  });
+
+  onDestroy(() => {
+    if (pollInterval) {
+      clearInterval(pollInterval);
+      pollInterval = null;
+    }
+  });
 </script>
 
 <div class="space-y-6">
@@ -158,20 +187,24 @@
         </div>
       </Card>
 
-      <!-- Feature 6: Local Share -->
+      <!-- Feature 6: File Share -->
       <Card>
         <div class="flex items-start gap-3">
           <div class="p-2 rounded-lg shrink-0 text-accent" style="background-color: rgba(112, 102, 224, 0.12);">
             <Smartphone size={16} />
           </div>
           <div>
-            <div class="text-sm font-semibold text-gray-100">Local Wi-Fi Mobile Share</div>
+            <div class="text-sm font-semibold text-gray-100">File Share</div>
             <div class="text-xs text-gray-400 mt-1 leading-normal">
-              Stream files to phone via QR scan, or press <strong class="text-gray-200 font-semibold">{store.settings.qr_shortcut}</strong> for Instant QR generator.
+              Stream and share files via QR scan, or press <strong class="text-gray-200 font-semibold">{store.settings.qr_shortcut}</strong> for Instant QR generator.
             </div>
           </div>
         </div>
       </Card>
     </div>
   </div>
+
+  {#if activeConversion && activeConversion.is_active}
+    <ActiveConversionBar info={activeConversion} />
+  {/if}
 </div>

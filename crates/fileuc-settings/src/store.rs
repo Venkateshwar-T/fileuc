@@ -67,6 +67,8 @@ pub struct AppSettings {
     pub ffmpeg_path: Option<PathBuf>,
     #[serde(default)]
     pub pending_update: Option<PendingUpdate>,
+    #[serde(default)]
+    pub detailed_progress: bool,
 }
 
 fn default_trigger_modifier() -> String {
@@ -95,6 +97,7 @@ impl Default for AppSettings {
             service_enabled: true,
             ffmpeg_path: None,
             pending_update: None,
+            detailed_progress: false,
         }
     }
 }

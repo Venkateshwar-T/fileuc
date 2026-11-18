@@ -103,6 +103,26 @@
 
       <div class="h-px bg-dark-border w-full"></div>
 
+      <!-- Detailed Progress Indicator Setting -->
+      <div class="flex items-center justify-between">
+        <div>
+          <div class="text-sm font-semibold text-gray-100">Detailed Progress Indicator</div>
+          <div class="text-xs text-gray-400 mt-0.5 leading-normal">
+            Show live estimated completion time and stop button in the floating HUD progress indicator
+          </div>
+        </div>
+
+        <Switch
+          checked={store.settings.detailed_progress ?? false}
+          onchange={(val) => {
+            store.settings.detailed_progress = val;
+            store.saveSettings();
+          }}
+        />
+      </div>
+
+      <div class="h-px bg-dark-border w-full"></div>
+
       <!-- Auto-Start Setting -->
       <div class="flex items-center justify-between">
         <div>

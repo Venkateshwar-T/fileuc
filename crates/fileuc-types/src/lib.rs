@@ -292,7 +292,18 @@ pub enum IpcMessage {
     OpenSettingsTab(i32),
     ReloadSettings,
     ToggleService(bool),
+    CancelActiveConversion,
     Quit,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct ActiveConversionInfo {
+    pub is_active: bool,
+    pub file_summary: String,
+    pub action_display: String,
+    pub progress: f32,
+    pub eta_text: String,
 }
 
 #[cfg(test)]

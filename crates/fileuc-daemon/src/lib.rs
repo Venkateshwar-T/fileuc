@@ -2,6 +2,7 @@ pub mod autostart;
 pub mod clipboard;
 pub mod cloudflared;
 pub mod context_menu;
+pub mod conversion_state;
 pub mod dispatcher;
 pub mod explorer;
 pub mod ipc;

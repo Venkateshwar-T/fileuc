@@ -1,4 +1,5 @@
 name: Release FileUC
+run-name: "Release ${{ github.ref_name || inputs.tag_name || 'Manual Build' }}"
 
 on:
   push:
