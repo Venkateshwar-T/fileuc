@@ -291,7 +291,6 @@ pub fn filter_actions(files: &[impl AsRef<Path>], has_ffmpeg: bool) -> Vec<Conve
         }
     }
 
-    actions.truncate(8);
     actions
 }
 

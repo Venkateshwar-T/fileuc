@@ -267,6 +267,7 @@ fn svg_gets_svg_to_webp() {
             ConversionAction::SvgToPng,
             ConversionAction::SvgToJpg,
             ConversionAction::SvgToWebp,
+            ConversionAction::IconGroup,
             ConversionAction::CreateZip,
             ConversionAction::Share,
         ]
