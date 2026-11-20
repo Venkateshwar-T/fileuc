@@ -232,6 +232,38 @@ pub fn dispatch_cancellable(
                     on_progress((i + 1) as f32 / total);
                 }
             }
+            ConversionAction::CreateIconPack => {
+                let total = request.files.len().max(1) as f32;
+                for (i, file) in request.files.iter().enumerate() {
+                    if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                        break;
+                    }
+                    on_progress(i as f32 / total);
+                    let parent = file.parent().unwrap_or_else(|| Path::new(""));
+                    let stem = file
+                        .file_stem()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string();
+                    let out_dir = parent.join(format!("{}_icon_pack", stem));
+
+                    match fileuc_convert::image::create_icon_pack(file, &out_dir) {
+                        Ok(assets) => {
+                            let final_dir = apply_output_mode(out_dir, &request.settings.output_mode);
+                            result.outputs.push(final_dir.clone());
+                            for asset in assets {
+                                if let Some(file_name) = asset.file_name() {
+                                    result.outputs.push(final_dir.join(file_name));
+                                } else {
+                                    result.outputs.push(asset);
+                                }
+                            }
+                        }
+                        Err(e) => result.errors.push((file.clone(), e)),
+                    }
+                    on_progress((i + 1) as f32 / total);
+                }
+            }
             ConversionAction::PdfToImages => {
                 let total = request.files.len().max(1) as f32;
                 for (i, file) in request.files.iter().enumerate() {
@@ -459,10 +491,8 @@ pub fn dispatch_cancellable(
                     }
                 }
             }
-            ConversionAction::OfficeGroup => {
-                process_with_resolved_output(&request.files, "docx", &request.settings, &cancel, &on_progress, &mut result, |src, dst| {
-                    fileuc_convert::doc::pdf_to_docx(src, dst)
-                });
+            ConversionAction::OfficeGroup | ConversionAction::IconGroup => {
+                // Group actions themselves are handled via sub-slices
             }
             _ => {}
         }

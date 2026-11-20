@@ -12,6 +12,8 @@ fn images_get_image_actions() {
             ConversionAction::ToPng,
             ConversionAction::ToJpg,
             ConversionAction::ToWebp,
+            ConversionAction::ToSvg,
+            ConversionAction::IconGroup,
             ConversionAction::ToPdf,
             ConversionAction::ReduceSize,
             ConversionAction::StripMetadata,
@@ -342,5 +344,15 @@ fn office_group_has_docx_and_excel_children() {
     assert_eq!(
         children,
         Some(&[ConversionAction::PdfToDocx, ConversionAction::PdfToExcel][..])
+    );
+}
+
+#[test]
+fn icon_group_has_ico_and_icon_pack_children() {
+    use fileuc_hud::smart_filter::get_action_children;
+    let children = get_action_children(ConversionAction::IconGroup);
+    assert_eq!(
+        children,
+        Some(&[ConversionAction::ToIco, ConversionAction::CreateIconPack][..])
     );
 }

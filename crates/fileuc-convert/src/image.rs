@@ -252,12 +252,27 @@ pub fn image_to_svg(src: &Path, output: &Path) -> Result<(), ConvertError> {
     Ok(())
 }
 
+/// Helper to fit any image into a square canvas with transparent padding, preserving aspect ratio.
+pub fn fit_to_square(img: &image::DynamicImage) -> image::DynamicImage {
+    if img.width() == img.height() {
+        return img.clone();
+    }
+    let max_dim = img.width().max(img.height());
+    let mut canvas = image::RgbaImage::new(max_dim, max_dim);
+    let offset_x = (max_dim - img.width()) / 2;
+    let offset_y = (max_dim - img.height()) / 2;
+    image::imageops::overlay(&mut canvas, &img.to_rgba8(), offset_x as i64, offset_y as i64);
+    image::DynamicImage::ImageRgba8(canvas)
+}
+
 /// Generates an authentic multi-resolution Windows .ico file containing standard resolutions:
 /// 16x16, 24x24, 32x32, 48x48, 64x64, 128x128, and 256x256.
 /// Encodes each resolution with 32-bit RGBA PNG, fully compliant with Windows Vista, 7, 8, 10, 11
 /// icon specifications for high-DPI and standard display scaling.
 pub fn create_authentic_ico(img: &image::DynamicImage, output: &Path) -> Result<(), ConvertError> {
     const SIZES: &[u32] = &[256, 128, 64, 48, 32, 24, 16];
+
+    let square_img = fit_to_square(img);
 
     struct IcoEntry {
         size: u32,
@@ -266,7 +281,7 @@ pub fn create_authentic_ico(img: &image::DynamicImage, output: &Path) -> Result<
 
     let mut entries = Vec::with_capacity(SIZES.len());
     for &size in SIZES {
-        let resized = img.resize_exact(size, size, image::imageops::FilterType::Lanczos3);
+        let resized = square_img.resize_exact(size, size, image::imageops::FilterType::Lanczos3);
         let mut png_bytes = Vec::new();
         resized
             .write_to(&mut std::io::Cursor::new(&mut png_bytes), image::ImageFormat::Png)
@@ -309,4 +324,59 @@ pub fn create_authentic_ico(img: &image::DynamicImage, output: &Path) -> Result<
 
     std::fs::write(output, ico_bytes).map_err(|e| ConvertError::IoError(e.to_string()))?;
     Ok(())
+}
+
+/// Generates a comprehensive modern App/Web Icon Pack inside `output_dir`.
+/// Outputs:
+/// - favicon.ico (multi-resolution 16, 24, 32, 48, 64, 128, 256)
+/// - favicon-16x16.png
+/// - favicon-24x24.png
+/// - favicon-32x32.png
+/// - favicon-48x48.png
+/// - icon-64x64.png
+/// - icon-128x128.png
+/// - icon-256x256.png
+/// - apple-touch-icon.png (180x180)
+/// - icon-192x192.png
+/// - icon-512x512.png
+pub fn create_icon_pack(src: &Path, output_dir: &Path) -> Result<Vec<PathBuf>, ConvertError> {
+    if !src.exists() {
+        return Err(ConvertError::SourceNotFound(src.to_string_lossy().to_string()));
+    }
+    std::fs::create_dir_all(output_dir).map_err(|e| ConvertError::IoError(e.to_string()))?;
+
+    let img = open_image_with_orientation(src)?;
+    let square_img = fit_to_square(&img);
+
+    let mut generated = Vec::new();
+
+    // 1. Master multi-res favicon.ico
+    let ico_path = output_dir.join("favicon.ico");
+    create_authentic_ico(&square_img, &ico_path)?;
+    generated.push(ico_path);
+
+    // 2. Individual PNG assets
+    const PNG_SIZES: &[(&str, u32)] = &[
+        ("favicon-16x16.png", 16),
+        ("favicon-24x24.png", 24),
+        ("favicon-32x32.png", 32),
+        ("favicon-48x48.png", 48),
+        ("icon-64x64.png", 64),
+        ("icon-128x128.png", 128),
+        ("icon-256x256.png", 256),
+        ("apple-touch-icon.png", 180),
+        ("icon-192x192.png", 192),
+        ("icon-512x512.png", 512),
+    ];
+
+    for &(filename, size) in PNG_SIZES {
+        let resized = square_img.resize_exact(size, size, image::imageops::FilterType::Lanczos3);
+        let file_path = output_dir.join(filename);
+        resized
+            .save(&file_path)
+            .map_err(|e| ConvertError::ConverterError(format!("Failed to save {}: {}", filename, e)))?;
+        generated.push(file_path);
+    }
+
+    Ok(generated)
 }

@@ -51,6 +51,10 @@ pub fn get_action_children(action: ConversionAction) -> Option<&'static [Convers
             ConversionAction::PdfToDocx,
             ConversionAction::PdfToExcel,
         ]),
+        ConversionAction::IconGroup => Some(&[
+            ConversionAction::ToIco,
+            ConversionAction::CreateIconPack,
+        ]),
         _ => None,
     }
 }
@@ -85,6 +89,8 @@ pub fn filter_actions(files: &[impl AsRef<Path>], has_ffmpeg: bool) -> Vec<Conve
                     ConversionAction::ToPng,
                     ConversionAction::ToJpg,
                     ConversionAction::ToWebp,
+                    ConversionAction::ToSvg,
+                    ConversionAction::IconGroup,
                     ConversionAction::ToPdf,
                     ConversionAction::ReduceSize,
                     ConversionAction::StripMetadata,
@@ -109,7 +115,7 @@ pub fn filter_actions(files: &[impl AsRef<Path>], has_ffmpeg: bool) -> Vec<Conve
                             "webp" => img_actions.retain(|&a| a != ConversionAction::ToWebp),
                             "bmp" => img_actions.retain(|&a| a != ConversionAction::ToBmp),
                             "tiff" | "tif" => img_actions.retain(|&a| a != ConversionAction::ToTiff),
-                            "ico" => img_actions.retain(|&a| a != ConversionAction::ToIco),
+                            "ico" => img_actions.retain(|&a| a != ConversionAction::IconGroup && a != ConversionAction::ToIco),
                             "svg" => img_actions.retain(|&a| a != ConversionAction::ToSvg),
                             _ => {}
                         }
@@ -121,6 +127,7 @@ pub fn filter_actions(files: &[impl AsRef<Path>], has_ffmpeg: bool) -> Vec<Conve
                 ConversionAction::SvgToPng,
                 ConversionAction::SvgToJpg,
                 ConversionAction::SvgToWebp,
+                ConversionAction::IconGroup,
                 ConversionAction::CreateZip,
                 ConversionAction::Share,
             ],

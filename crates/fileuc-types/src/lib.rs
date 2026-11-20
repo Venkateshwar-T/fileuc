@@ -54,6 +54,8 @@ pub enum ConversionAction {
     ReduceSize,
     BulkRename,
     OfficeGroup,
+    IconGroup,
+    CreateIconPack,
     ToMp3,
     ToWav,
     ToOgg,
@@ -114,6 +116,8 @@ impl ConversionAction {
             ConversionAction::ReduceSize => "Reduce",
             ConversionAction::BulkRename => "Rename",
             ConversionAction::OfficeGroup => "Office",
+            ConversionAction::IconGroup => "Icon",
+            ConversionAction::CreateIconPack => "Icon Pack",
             ConversionAction::ToMp3 => "MP3",
             ConversionAction::ToWav => "WAV",
             ConversionAction::ToOgg => "OGG",
@@ -146,6 +150,8 @@ impl ConversionAction {
             ConversionAction::ReduceSize => "Size Limit",
             ConversionAction::BulkRename => "Bulk",
             ConversionAction::OfficeGroup => "Documents",
+            ConversionAction::IconGroup => "Icons",
+            ConversionAction::CreateIconPack => "Assets",
             ConversionAction::ToMp3
             | ConversionAction::ToWav
             | ConversionAction::ToOgg
@@ -199,12 +205,19 @@ impl ConversionAction {
             ConversionAction::ReduceSize => "Reduce File Size",
             ConversionAction::BulkRename => "Bulk Rename Files",
             ConversionAction::OfficeGroup => "Office Formats",
+            ConversionAction::IconGroup => "Icon Formats",
+            ConversionAction::CreateIconPack => "Generate App/Web Icon Pack",
             ConversionAction::ToMp3 => "Convert to MP3",
             ConversionAction::ToWav => "Convert to WAV",
             ConversionAction::ToOgg => "Convert to OGG",
             ConversionAction::ToAac => "Convert to AAC",
             ConversionAction::ToFlac => "Convert to FLAC",
         }
+    }
+
+    /// Returns true if this action is an expandable category group that opens sub-slices on hover.
+    pub fn is_group(&self) -> bool {
+        matches!(self, ConversionAction::OfficeGroup | ConversionAction::IconGroup)
     }
 }
 

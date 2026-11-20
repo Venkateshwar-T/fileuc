@@ -26,7 +26,7 @@
 </script>
 
 <div
-  class="sticky bottom-0 z-30 w-full rounded-xl p-4 shadow-xl border border-dark-border bg-dark-card/95 backdrop-blur-md transition-all duration-300 animate-in fade-in slide-in-from-bottom-2"
+  class="sticky bottom-2 z-30 w-full rounded-xl p-4 shadow-[0_12px_32px_-4px_rgba(0,0,0,0.18),0_4px_12px_-2px_rgba(0,0,0,0.08)] dark:shadow-[0_16px_40px_-6px_rgba(0,0,0,0.7)] border border-gray-200 dark:border-dark-border bg-white dark:bg-dark-card transition-all duration-300 animate-in fade-in slide-in-from-bottom-2"
 >
   <div class="flex items-center justify-between gap-4">
     <!-- Left: Files + Arrow + Action Badge -->
@@ -66,7 +66,7 @@
 
   <!-- Bottom: Horizontal Progress Bar -->
   <div class="mt-3 flex items-center gap-3">
-    <div class="flex-1 h-2 rounded-full overflow-hidden bg-black/10 dark:bg-white/10">
+    <div class="flex-1 h-2 rounded-full overflow-hidden bg-gray-100 dark:bg-white/10 border border-gray-200/60 dark:border-white/5">
       <div
         class="h-full rounded-full transition-all duration-150 ease-out"
         style="width: {Math.max(2, Math.min(100, Math.round(info.progress * 100)))}%; background: linear-gradient(90deg, #10B981 0%, #2ED573 100%);"

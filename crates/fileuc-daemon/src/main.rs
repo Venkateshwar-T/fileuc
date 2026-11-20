@@ -1153,7 +1153,7 @@ fn main() {
                                         return false;
                                     }
                                     if let Some(g_idx) = s.hovered_slice {
-                                        if g_idx < current_actions.len() && current_actions[g_idx] == ConversionAction::OfficeGroup {
+                                        if g_idx < current_actions.len() && current_actions[g_idx].is_group() {
                                             return false;
                                         }
                                     }
@@ -1960,8 +1960,8 @@ fn dispatch_action(
     active_conversion_summary: &mut String,
     active_conversion_action: &mut String,
 ) {
-    if action == ConversionAction::OfficeGroup {
-        // Parent category slice is an expandable container (DOCX / EXCEL).
+    if action.is_group() {
+        // Parent category slice is an expandable container (Office / Icon).
         // Releasing directly on the parent category dismisses without converting.
         hud.hide();
         current_files.clear();

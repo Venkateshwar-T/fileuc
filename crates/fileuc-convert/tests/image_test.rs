@@ -102,3 +102,24 @@ fn test_open_image_with_orientation_and_conversion() {
     assert!(webp_out.exists());
     assert_eq!(webp_out.extension().unwrap(), "webp");
 }
+
+#[test]
+fn create_icon_pack_generates_all_assets() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("logo.png");
+    image::RgbaImage::new(128, 128).save(&src).unwrap();
+    let out_dir = tmp.path().join("logo_icon_pack");
+    let files = fileuc_convert::image::create_icon_pack(&src, &out_dir).unwrap();
+    assert_eq!(files.len(), 11);
+    assert!(out_dir.join("favicon.ico").exists());
+    assert!(out_dir.join("favicon-16x16.png").exists());
+    assert!(out_dir.join("favicon-24x24.png").exists());
+    assert!(out_dir.join("favicon-32x32.png").exists());
+    assert!(out_dir.join("favicon-48x48.png").exists());
+    assert!(out_dir.join("icon-64x64.png").exists());
+    assert!(out_dir.join("icon-128x128.png").exists());
+    assert!(out_dir.join("icon-256x256.png").exists());
+    assert!(out_dir.join("apple-touch-icon.png").exists());
+    assert!(out_dir.join("icon-192x192.png").exists());
+    assert!(out_dir.join("icon-512x512.png").exists());
+}
