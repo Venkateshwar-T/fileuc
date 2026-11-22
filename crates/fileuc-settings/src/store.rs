@@ -49,6 +49,8 @@ pub struct AppSettings {
     pub trigger_modifier: String,
     #[serde(default = "default_qr_shortcut")]
     pub qr_shortcut: String,
+    #[serde(default = "default_search_shortcut")]
+    pub search_shortcut: String,
     #[serde(default)]
     pub hud_style: HudStyleChoice,
     #[serde(default)]
@@ -79,6 +81,10 @@ fn default_qr_shortcut() -> String {
     "Ctrl+Shift+Q".to_string()
 }
 
+fn default_search_shortcut() -> String {
+    "Ctrl+Space".to_string()
+}
+
 fn default_accent_color() -> String {
     "#7C5CFC".to_string()
 }
@@ -88,6 +94,7 @@ impl Default for AppSettings {
         Self {
             trigger_modifier: default_trigger_modifier(),
             qr_shortcut: default_qr_shortcut(),
+            search_shortcut: default_search_shortcut(),
             hud_style: HudStyleChoice::default(),
             output_mode: OutputMode::default(),
             theme: ThemeChoice::default(),
@@ -146,6 +153,15 @@ impl SettingsStore {
         }
         let json = serde_json::to_string_pretty(settings)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-        std::fs::write(&self.path, json)
+
+        // Atomic write: write to temporary file first, then atomically rename
+        let tmp_path = self.path.with_extension(format!("tmp.{}", std::process::id()));
+        std::fs::write(&tmp_path, json.as_bytes())?;
+
+        if std::fs::rename(&tmp_path, &self.path).is_err() {
+            let _ = std::fs::remove_file(&self.path);
+            std::fs::rename(&tmp_path, &self.path)?;
+        }
+        Ok(())
     }
 }

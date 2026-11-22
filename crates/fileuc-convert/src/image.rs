@@ -267,8 +267,72 @@ pub fn fit_to_square(img: &image::DynamicImage) -> image::DynamicImage {
 
 /// Generates an authentic multi-resolution Windows .ico file containing standard resolutions:
 /// 16x16, 24x24, 32x32, 48x48, 64x64, 128x128, and 256x256.
-/// Encodes each resolution with 32-bit RGBA PNG, fully compliant with Windows Vista, 7, 8, 10, 11
-/// icon specifications for high-DPI and standard display scaling.
+/// Encodes an image into standard Windows ICO DIB format (BITMAPINFOHEADER + 32-bit BGRA + 1-bit AND mask).
+/// Fully compatible with Windows Photos, Paint, GDI+, WIC, Explorer thumbnails, and legacy viewers.
+fn encode_ico_dib(img: &image::RgbaImage) -> Vec<u8> {
+    let width = img.width();
+    let height = img.height();
+
+    // BITMAPINFOHEADER is 40 bytes.
+    // In ICO, biHeight is doubled (2 * height) for XOR mask + AND mask.
+    let bi_size: u32 = 40;
+    let bi_width: i32 = width as i32;
+    let bi_height: i32 = (height * 2) as i32;
+    let bi_planes: u16 = 1;
+    let bi_bit_count: u16 = 32;
+    let bi_compression: u32 = 0; // BI_RGB
+
+    let xor_bytes_len = (width * height * 4) as usize;
+    // AND mask row stride is padded to 32 bits (4 bytes)
+    let and_row_stride = ((width + 31) / 32 * 4) as usize;
+    let and_bytes_len = and_row_stride * (height as usize);
+    let bi_size_image: u32 = (xor_bytes_len + and_bytes_len) as u32;
+
+    let mut buf = Vec::with_capacity(40 + xor_bytes_len + and_bytes_len);
+    buf.extend_from_slice(&bi_size.to_le_bytes());
+    buf.extend_from_slice(&bi_width.to_le_bytes());
+    buf.extend_from_slice(&bi_height.to_le_bytes());
+    buf.extend_from_slice(&bi_planes.to_le_bytes());
+    buf.extend_from_slice(&bi_bit_count.to_le_bytes());
+    buf.extend_from_slice(&bi_compression.to_le_bytes());
+    buf.extend_from_slice(&bi_size_image.to_le_bytes());
+    buf.extend_from_slice(&0u32.to_le_bytes()); // biXPelsPerMeter
+    buf.extend_from_slice(&0u32.to_le_bytes()); // biYPelsPerMeter
+    buf.extend_from_slice(&0u32.to_le_bytes()); // biClrUsed
+    buf.extend_from_slice(&0u32.to_le_bytes()); // biClrImportant
+
+    // XOR mask: 32-bit BGRA in bottom-up row order
+    for y in (0..height).rev() {
+        for x in 0..width {
+            let pixel = img.get_pixel(x, y);
+            // pixel is [R, G, B, A] -> store B, G, R, A
+            buf.push(pixel[2]);
+            buf.push(pixel[1]);
+            buf.push(pixel[0]);
+            buf.push(pixel[3]);
+        }
+    }
+
+    // AND mask: 1 bit per pixel, bottom-up row order, padded to 4 bytes per row
+    for y in (0..height).rev() {
+        let mut row_bytes = vec![0u8; and_row_stride];
+        for x in 0..width {
+            let pixel = img.get_pixel(x, y);
+            if pixel[3] == 0 {
+                let byte_idx = (x / 8) as usize;
+                let bit_idx = 7 - (x % 8);
+                row_bytes[byte_idx] |= 1 << bit_idx;
+            }
+        }
+        buf.extend_from_slice(&row_bytes);
+    }
+
+    buf
+}
+
+/// Creates a multi-resolution ICO file (256, 128, 64, 48, 32, 24, 16).
+/// Encodes frames using canonical 32-bit DIB format so Windows Photos, GDI+, WIC,
+/// Paint, and Windows Explorer can open and render the file with zero errors.
 pub fn create_authentic_ico(img: &image::DynamicImage, output: &Path) -> Result<(), ConvertError> {
     const SIZES: &[u32] = &[256, 128, 64, 48, 32, 24, 16];
 
@@ -282,13 +346,11 @@ pub fn create_authentic_ico(img: &image::DynamicImage, output: &Path) -> Result<
     let mut entries = Vec::with_capacity(SIZES.len());
     for &size in SIZES {
         let resized = square_img.resize_exact(size, size, image::imageops::FilterType::Lanczos3);
-        let mut png_bytes = Vec::new();
-        resized
-            .write_to(&mut std::io::Cursor::new(&mut png_bytes), image::ImageFormat::Png)
-            .map_err(|e| ConvertError::ConverterError(format!("Failed to encode {}x{} PNG for ICO: {}", size, size, e)))?;
+        let rgba = resized.to_rgba8();
+        let dib_bytes = encode_ico_dib(&rgba);
         entries.push(IcoEntry {
             size,
-            data: png_bytes,
+            data: dib_bytes,
         });
     }
 
@@ -317,9 +379,13 @@ pub fn create_authentic_ico(img: &image::DynamicImage, output: &Path) -> Result<
         current_offset += entry.data.len() as u32;
     }
 
-    // 3. Image Payloads (PNG data chunks)
+    // 3. Image Payloads (DIB data chunks)
     for entry in &entries {
         ico_bytes.extend_from_slice(&entry.data);
+    }
+
+    if let Some(parent) = output.parent() {
+        let _ = std::fs::create_dir_all(parent);
     }
 
     std::fs::write(output, ico_bytes).map_err(|e| ConvertError::IoError(e.to_string()))?;
@@ -379,4 +445,57 @@ pub fn create_icon_pack(src: &Path, output_dir: &Path) -> Result<Vec<PathBuf>, C
     }
 
     Ok(generated)
+}
+
+/// Converts raw Windows CF_DIB / CF_DIBV5 clipboard bytes into a standard PNG file on disk.
+pub fn save_dib_as_png(dib_bytes: &[u8], out_path: &Path) -> Result<(), ConvertError> {
+    if dib_bytes.len() < 40 {
+        return Err(ConvertError::ConverterError("DIB data too short".to_string()));
+    }
+
+    let bi_size = u32::from_le_bytes([dib_bytes[0], dib_bytes[1], dib_bytes[2], dib_bytes[3]]);
+    let bi_bit_count = if dib_bytes.len() >= 16 {
+        u16::from_le_bytes([dib_bytes[14], dib_bytes[15]])
+    } else {
+        24
+    };
+    let bi_clr_used = if dib_bytes.len() >= 36 {
+        u32::from_le_bytes([dib_bytes[32], dib_bytes[33], dib_bytes[34], dib_bytes[35]])
+    } else {
+        0
+    };
+    let palette_colors = if bi_clr_used > 0 {
+        bi_clr_used
+    } else if bi_bit_count <= 8 {
+        1 << bi_bit_count
+    } else {
+        0
+    };
+    let bi_compression = if dib_bytes.len() >= 20 {
+        u32::from_le_bytes([dib_bytes[16], dib_bytes[17], dib_bytes[18], dib_bytes[19]])
+    } else {
+        0
+    };
+    let masks_size = if bi_size == 40 && bi_compression == 3 { 12 } else { 0 };
+
+    let off_bits = 14 + bi_size + masks_size + palette_colors * 4;
+    let file_size = (14 + dib_bytes.len()) as u32;
+
+    let mut bmp = Vec::with_capacity(14 + dib_bytes.len());
+    bmp.extend_from_slice(b"BM");
+    bmp.extend_from_slice(&file_size.to_le_bytes());
+    bmp.extend_from_slice(&0u16.to_le_bytes());
+    bmp.extend_from_slice(&0u16.to_le_bytes());
+    bmp.extend_from_slice(&off_bits.to_le_bytes());
+    bmp.extend_from_slice(dib_bytes);
+
+    let img = image::load_from_memory(&bmp)
+        .map_err(|e| ConvertError::ConverterError(format!("Failed to decode DIB as BMP: {}", e)))?;
+
+    if let Some(parent) = out_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+
+    img.save(out_path)
+        .map_err(|e| ConvertError::ConverterError(format!("Failed to save clipboard image as PNG: {}", e)))
 }

@@ -1,8 +1,9 @@
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::net::{IpAddr, TcpListener, TcpStream, UdpSocket};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
@@ -28,15 +29,15 @@ pub struct ShareServerHandle {
     pub token: String,
     pub rx: Receiver<ShareServerEvent>,
     shutdown: Arc<AtomicBool>,
-    client_streams: Arc<std::sync::Mutex<Vec<TcpStream>>>,
+    client_streams: Arc<std::sync::Mutex<HashMap<u64, TcpStream>>>,
     thread: Option<JoinHandle<()>>,
 }
 
 impl ShareServerHandle {
     pub fn stop(&mut self) {
         self.shutdown.store(true, Ordering::SeqCst);
-        if let Ok(streams) = self.client_streams.lock() {
-            for stream in streams.iter() {
+        if let Ok(mut streams) = self.client_streams.lock() {
+            for (_, stream) in streams.drain() {
                 let _ = stream.shutdown(std::net::Shutdown::Both);
             }
         }
@@ -115,11 +116,23 @@ pub fn get_local_lan_ip() -> Option<IpAddr> {
 }
 
 fn generate_token() -> String {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    format!("{:016x}", now ^ 0x5a5a_a5a5_c3c3_3c3c)
+    #[link(name = "advapi32")]
+    extern "system" {
+        #[link_name = "SystemFunction036"]
+        fn RtlGenRandom(buffer: *mut u8, length: u32) -> u8;
+    }
+
+    let mut bytes = [0u8; 16];
+    let success = unsafe { RtlGenRandom(bytes.as_mut_ptr(), bytes.len() as u32) };
+    if success != 0 {
+        bytes.iter().map(|b| format!("{:02x}", b)).collect()
+    } else {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        format!("{:032x}", now ^ 0x5a5a_a5a5_c3c3_3c3c_5a5a_a5a5_c3c3_3c3c)
+    }
 }
 
 pub fn start_share_server(files: &[PathBuf]) -> Result<ShareServerHandle, String> {
@@ -184,8 +197,10 @@ pub fn start_share_server(files: &[PathBuf]) -> Result<ShareServerHandle, String
     let display_name_clone = display_name.clone();
 
     let shared_temp = Arc::new(temp_guard);
-    let client_streams = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let client_streams = Arc::new(std::sync::Mutex::new(HashMap::<u64, TcpStream>::new()));
     let client_streams_clone = client_streams.clone();
+    let stream_id_counter = Arc::new(AtomicU64::new(1));
+    let active_connections = Arc::new(AtomicUsize::new(0));
 
     let thread = thread::spawn(move || {
         let keep_temp = shared_temp;
@@ -193,11 +208,21 @@ pub fn start_share_server(files: &[PathBuf]) -> Result<ShareServerHandle, String
         while !shutdown_clone.load(Ordering::Relaxed) {
             match listener.accept() {
                 Ok((mut stream, _)) => {
+                    const MAX_CONCURRENT_CLIENTS: usize = 8;
+                    if active_connections.load(Ordering::Relaxed) >= MAX_CONCURRENT_CLIENTS {
+                        let _ = stream.write_all(b"HTTP/1.1 503 Service Unavailable\r\nRetry-After: 5\r\nConnection: close\r\n\r\nServer Busy");
+                        let _ = stream.shutdown(std::net::Shutdown::Both);
+                        continue;
+                    }
+
+                    active_connections.fetch_add(1, Ordering::Relaxed);
+                    let stream_id = stream_id_counter.fetch_add(1, Ordering::Relaxed);
+
                     let _ = stream.set_nonblocking(false);
                     if let Ok(cloned_sock) = stream.try_clone() {
                         let _ = cloned_sock.set_nonblocking(false);
                         if let Ok(mut lock) = client_streams_clone.lock() {
-                            lock.push(cloned_sock);
+                            lock.insert(stream_id, cloned_sock);
                         }
                     }
                     let target = target_path.clone();
@@ -205,8 +230,32 @@ pub fn start_share_server(files: &[PathBuf]) -> Result<ShareServerHandle, String
                     let tok = token_clone.clone();
                     let tx_sub = tx.clone();
                     let temp_holder = keep_temp.clone();
+                    let streams_for_worker = client_streams_clone.clone();
+                    let counter_for_worker = active_connections.clone();
+
                     thread::spawn(move || {
-                        let _keep_alive = temp_holder;
+                        struct StreamGuard {
+                            id: u64,
+                            streams: Arc<std::sync::Mutex<HashMap<u64, TcpStream>>>,
+                            counter: Arc<AtomicUsize>,
+                            _keep_alive: Arc<Option<NamedTempFile>>,
+                        }
+                        impl Drop for StreamGuard {
+                            fn drop(&mut self) {
+                                self.counter.fetch_sub(1, Ordering::Relaxed);
+                                if let Ok(mut map) = self.streams.lock() {
+                                    map.remove(&self.id);
+                                }
+                            }
+                        }
+
+                        let _guard = StreamGuard {
+                            id: stream_id,
+                            streams: streams_for_worker,
+                            counter: counter_for_worker,
+                            _keep_alive: temp_holder,
+                        };
+
                         handle_client(
                             &mut stream,
                             &target,

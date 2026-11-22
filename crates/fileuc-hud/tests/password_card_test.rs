@@ -109,3 +109,28 @@ fn test_render_password_card() {
     let non_transparent = pixmap.data().chunks_exact(4).filter(|p| p[3] > 0).count();
     assert!(non_transparent > 1000, "Pixmap should have non-transparent pixels rendered");
 }
+
+#[test]
+fn test_password_card_toggle_show_password() {
+    let mut state = PasswordCardState::new(
+        PathBuf::from("C:\\test\\document.pdf"),
+        1.0,
+    );
+    assert!(!state.show_password);
+    state.toggle_show_password();
+    assert!(state.show_password);
+    state.toggle_show_password();
+    assert!(!state.show_password);
+
+    state.push_char('A');
+    state.toggle_show_password();
+    for _ in 0..60 {
+        state.tick(1.0 / 60.0);
+    }
+    let mut pixmap = Pixmap::new(400, 400).unwrap();
+    let theme = Theme::dark();
+    let fonts = FontContext::new();
+    render_password_card(&state, &theme, &fonts, &mut pixmap);
+    let non_transparent = pixmap.data().chunks_exact(4).filter(|p| p[3] > 0).count();
+    assert!(non_transparent > 1000, "Pixmap should render plaintext password when show_password is true");
+}

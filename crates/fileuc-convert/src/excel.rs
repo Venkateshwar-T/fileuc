@@ -87,38 +87,58 @@ fn try_excel_com_convert(src: &Path, output: &Path) -> Result<(), ConvertError> 
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
 
-    let mut child = cmd.spawn().map_err(|e| ConvertError::ConverterError(e.to_string()))?;
-    let start = std::time::Instant::now();
-    let timeout = std::time::Duration::from_secs(45);
-    let mut finished = false;
-    let mut exit_status = None;
-
-    while start.elapsed() < timeout {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                finished = true;
-                exit_status = Some(status);
-                break;
-            }
-            Ok(None) => {
-                std::thread::sleep(std::time::Duration::from_millis(50));
-            }
-            Err(e) => {
+    struct ProcessTreeGuard(Option<std::process::Child>);
+    impl Drop for ProcessTreeGuard {
+        fn drop(&mut self) {
+            if let Some(mut child) = self.0.take() {
+                let pid = child.id();
                 let _ = child.kill();
-                return Err(ConvertError::ConverterError(format!("Excel COM error: {}", e)));
+                let _ = child.wait();
+                #[cfg(windows)]
+                {
+                    use std::os::windows::process::CommandExt;
+                    let _ = std::process::Command::new("taskkill")
+                        .args(["/F", "/T", "/PID", &pid.to_string()])
+                        .creation_flags(0x08000000)
+                        .output();
+                }
             }
         }
     }
 
-    if !finished {
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err(ConvertError::ConverterError("Excel COM conversion timed out".to_string()));
+    let child = cmd.spawn().map_err(|e| ConvertError::ConverterError(e.to_string()))?;
+    let mut guard = ProcessTreeGuard(Some(child));
+    let start = std::time::Instant::now();
+    let timeout = std::time::Duration::from_secs(45);
+    let mut exit_status = None;
+
+    while start.elapsed() < timeout {
+        if let Some(ref mut child) = guard.0 {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    exit_status = Some(status);
+                    break;
+                }
+                Ok(None) => {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                Err(e) => {
+                    return Err(ConvertError::ConverterError(format!("Excel COM error: {}", e)));
+                }
+            }
+        }
     }
 
-    let status = exit_status.ok_or_else(|| {
-        ConvertError::ConverterError("Excel COM process exited without status".to_string())
-    })?;
+    let status = match exit_status {
+        Some(s) => {
+            // Disarm guard so normal exit doesn't invoke taskkill
+            guard.0 = None;
+            s
+        }
+        None => {
+            return Err(ConvertError::ConverterError("Excel COM conversion timed out".to_string()));
+        }
+    };
     if status.success() && output.exists() {
         if let Ok(meta) = std::fs::metadata(output) {
             if meta.len() > 0 {

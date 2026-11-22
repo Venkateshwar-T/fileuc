@@ -330,6 +330,7 @@ fn run_7z_archive_command(
     cmd.arg("-y")
         .arg("-bsp1")
         .arg("-mmt=on")
+        .arg("--")
         .arg(&abs_output);
 
     if let Some(ref cp) = common_parent {
@@ -505,6 +506,9 @@ fn add_dir_to_zip_tracked<W: Write + std::io::Seek>(
     let entries = std::fs::read_dir(current_dir).map_err(|e| ConvertError::IoError(e.to_string()))?;
 
     for entry in entries.flatten() {
+        if entry.file_type().map(|ft| ft.is_symlink()).unwrap_or(false) {
+            continue;
+        }
         let path = entry.path();
         let relative = path
             .strip_prefix(base_dir)
@@ -543,6 +547,7 @@ pub fn extract_archive(src: &Path, output_dir: &Path) -> Result<(), ConvertError
             .arg("-y")
             .arg("-p-")
             .arg(format!("-o{}", output_dir.to_string_lossy()))
+            .arg("--")
             .arg(src);
 
         #[cfg(windows)]
@@ -591,9 +596,67 @@ pub fn extract_archive(src: &Path, output_dir: &Path) -> Result<(), ConvertError
     let mut archive = ZipArchive::new(file)
         .map_err(|e| ConvertError::ConverterError(format!("Failed to open zip archive: {}", e)))?;
 
-    archive
-        .extract(output_dir)
-        .map_err(|e| ConvertError::ConverterError(format!("Failed to extract zip archive: {}", e)))?;
+    const MAX_FILES: usize = 50_000;
+    const MAX_TOTAL_BYTES: u64 = 10 * 1024 * 1024 * 1024; // 10 GB decompression quota
+
+    if archive.len() > MAX_FILES {
+        return Err(ConvertError::ConverterError(format!(
+            "Archive contains too many files ({} > limit of {})",
+            archive.len(),
+            MAX_FILES
+        )));
+    }
+
+    let mut total_decompressed_bytes: u64 = 0;
+
+    for i in 0..archive.len() {
+        let mut entry = archive
+            .by_index(i)
+            .map_err(|e| ConvertError::ConverterError(format!("Failed to read zip entry: {}", e)))?;
+
+        let enclosed = match entry.enclosed_name() {
+            Some(path) => path.to_owned(),
+            None => {
+                return Err(ConvertError::ConverterError(format!(
+                    "Potentially dangerous archive entry path escapes target directory: {}",
+                    entry.name()
+                )));
+            }
+        };
+
+        let out_path = output_dir.join(&enclosed);
+
+        if !out_path.starts_with(output_dir) {
+            return Err(ConvertError::ConverterError(format!(
+                "Archive entry escapes destination: {}",
+                entry.name()
+            )));
+        }
+
+        if entry.is_dir() {
+            std::fs::create_dir_all(&out_path).map_err(|e| ConvertError::IoError(e.to_string()))?;
+        } else {
+            if let Some(parent) = out_path.parent() {
+                if !parent.exists() {
+                    std::fs::create_dir_all(parent)
+                        .map_err(|e| ConvertError::IoError(e.to_string()))?;
+                }
+            }
+            let mut outfile = File::create(&out_path).map_err(|e| ConvertError::IoError(e.to_string()))?;
+            let remaining_quota = MAX_TOTAL_BYTES.saturating_sub(total_decompressed_bytes);
+            let mut limited_reader = entry.by_ref().take(remaining_quota + 1);
+            let written = std::io::copy(&mut limited_reader, &mut outfile)
+                .map_err(|e| ConvertError::IoError(e.to_string()))?;
+            total_decompressed_bytes = total_decompressed_bytes.saturating_add(written);
+            if total_decompressed_bytes > MAX_TOTAL_BYTES {
+                drop(outfile);
+                let _ = std::fs::remove_file(&out_path);
+                return Err(ConvertError::ConverterError(
+                    "Archive decompression quota exceeded (potential decompression bomb)".to_string(),
+                ));
+            }
+        }
+    }
 
     Ok(())
 }

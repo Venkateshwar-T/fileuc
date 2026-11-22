@@ -32,6 +32,7 @@ pub struct PasswordCardState {
     pub last_cursor_visible: bool,
     pub dpi_scale: f32,
     pub mode: PasswordCardMode,
+    pub show_password: bool,
 }
 
 impl PasswordCardState {
@@ -61,7 +62,12 @@ impl PasswordCardState {
             last_cursor_visible: true,
             dpi_scale: if dpi_scale <= 0.0 { 1.0 } else { dpi_scale },
             mode,
+            show_password: false,
         }
+    }
+
+    pub fn toggle_show_password(&mut self) {
+        self.show_password = !self.show_password;
     }
 
     pub fn push_char(&mut self, c: char) {
@@ -98,36 +104,47 @@ impl PasswordCardState {
 
     pub fn card_bounds(&self, cx: f32, cy: f32) -> (f32, f32, f32, f32) {
         let card_w = 340.0 * self.dpi_scale;
-        let card_h = 196.0 * self.dpi_scale;
+        let card_h = 204.0 * self.dpi_scale;
+        let left = cx - card_w / 2.0;
+        let top = cy - card_h / 2.0;
+        (left, top, card_w, card_h)
+    }
+
+    pub fn scaled_card_bounds(&self, cx: f32, cy: f32) -> (f32, f32, f32, f32) {
+        let scale = if self.pop_in.value() > 0.0 { self.pop_in.value() } else { 1.0 };
+        let card_w = 340.0 * self.dpi_scale * scale;
+        let card_h = 204.0 * self.dpi_scale * scale;
         let left = cx - card_w / 2.0;
         let top = cy - card_h / 2.0;
         (left, top, card_w, card_h)
     }
 
     pub fn hit_test_close(&self, rel_x: f32, rel_y: f32, cx: f32, cy: f32) -> bool {
-        let (left, top, w, _) = self.card_bounds(cx, cy);
-        let btn_cx = left + w - 22.0 * self.dpi_scale;
-        let btn_cy = top + 22.0 * self.dpi_scale;
-        let hit_radius = 18.0 * self.dpi_scale;
+        let scale = if self.pop_in.value() > 0.0 { self.pop_in.value() } else { 1.0 };
+        let (left, top, w, _) = self.scaled_card_bounds(cx, cy);
+        let btn_cx = left + w - 22.0 * self.dpi_scale * scale;
+        let btn_cy = top + 22.0 * self.dpi_scale * scale;
+        let hit_radius = 18.0 * self.dpi_scale * scale;
         let dx = (cx + rel_x) - btn_cx;
         let dy = (cy + rel_y) - btn_cy;
         (dx * dx + dy * dy) <= (hit_radius * hit_radius)
     }
 
     pub fn hit_test_submit(&self, rel_x: f32, rel_y: f32, cx: f32, cy: f32) -> bool {
+        let scale = if self.pop_in.value() > 0.0 { self.pop_in.value() } else { 1.0 };
         let px = cx + rel_x;
         let py = cy + rel_y;
-        let (_, top, _, _) = self.card_bounds(cx, cy);
-        let btn_w = 296.0 * self.dpi_scale;
-        let btn_h = 40.0 * self.dpi_scale;
+        let (_, top, _, _) = self.scaled_card_bounds(cx, cy);
+        let btn_w = 296.0 * self.dpi_scale * scale;
+        let btn_h = 40.0 * self.dpi_scale * scale;
         let btn_left = cx - btn_w / 2.0;
-        let btn_top = top + 126.0 * self.dpi_scale;
+        let btn_top = top + 144.0 * self.dpi_scale * scale;
 
         px >= btn_left && px <= (btn_left + btn_w) && py >= btn_top && py <= (btn_top + btn_h)
     }
 
     pub fn hit_test_card(&self, rel_x: f32, rel_y: f32, cx: f32, cy: f32) -> bool {
-        let (left, top, w, h) = self.card_bounds(cx, cy);
+        let (left, top, w, h) = self.scaled_card_bounds(cx, cy);
         let px = cx + rel_x;
         let py = cy + rel_y;
         px >= left && px <= (left + w) && py >= top && py <= (top + h)
@@ -152,7 +169,7 @@ pub fn render_password_card(
     let dpi = state.dpi_scale;
 
     let base_w = 340.0 * dpi;
-    let base_h = 196.0 * dpi;
+    let base_h = 204.0 * dpi;
     let half_w = (base_w / 2.0) * scale;
     let half_h = (base_h / 2.0) * scale;
     let left = cx - half_w;
@@ -226,7 +243,7 @@ pub fn render_password_card(
                     false,
                 );
             } else {
-                let display_name = truncate_filename(&state.file_name, 36);
+                let display_name = truncate_filename(&state.file_name, 20);
                 fonts.draw_text_left(
                     pixmap,
                     &display_name,
@@ -244,13 +261,14 @@ pub fn render_password_card(
     let input_w = 296.0 * dpi * scale;
     let input_h = 40.0 * dpi * scale;
     let input_left = cx - input_w / 2.0;
-    let input_top = top + 78.0 * dpi * scale;
+    let input_top = top + 68.0 * dpi * scale;
     let input_corner_r = 8.0 * dpi * scale;
 
     draw_input_box(pixmap, input_left, input_top, input_w, input_h, input_corner_r, scale, dpi, theme);
 
     // 6. Password Text / Placeholder (Vertically centered)
     let input_center_y = input_top + input_h / 2.0;
+    let font_size = 16.0 * dpi * scale;
     if state.password_input.is_empty() {
         let placeholder = match state.mode {
             PasswordCardMode::Lock => "Enter password...",
@@ -261,9 +279,20 @@ pub fn render_password_card(
             placeholder,
             input_left + 14.0 * dpi * scale,
             input_center_y,
-            14.5 * dpi * scale,
+            font_size,
             theme.text_secondary,
             false,
+        );
+    } else if state.show_password {
+        // Plaintext password visible on Tab press
+        fonts.draw_text_left(
+            pixmap,
+            &state.password_input,
+            input_left + 14.0 * dpi * scale,
+            input_center_y,
+            font_size,
+            theme.text_primary,
+            true,
         );
     } else {
         // Masked bullets: "•••••"
@@ -273,7 +302,7 @@ pub fn render_password_card(
             &bullets,
             input_left + 14.0 * dpi * scale,
             input_center_y,
-            16.0 * dpi * scale,
+            font_size,
             theme.text_primary,
             true,
         );
@@ -282,9 +311,11 @@ pub fn render_password_card(
     // Blinking Cursor Line (crisp 1.2px caret)
     let text_w = if state.password_input.is_empty() {
         0.0
+    } else if state.show_password {
+        fonts.measure_text(&state.password_input, font_size, true)
     } else {
         let bullets: String = "\u{2022}".repeat(state.password_input.len());
-        fonts.measure_text(&bullets, 16.0 * dpi * scale, true)
+        fonts.measure_text(&bullets, font_size, true)
     };
     let cursor_x = input_left + 14.0 * dpi * scale + text_w + 2.0 * dpi * scale;
     draw_text_cursor(
@@ -297,11 +328,23 @@ pub fn render_password_card(
         theme.text_primary,
     );
 
-    // 7. Action Button (tight 8px gap between input and button!)
+    // 7. Hint text below input: "Press Tab to view or hide"
+    let hint_y = top + 120.0 * dpi * scale;
+    fonts.draw_text_left(
+        pixmap,
+        "Press Tab to view or hide",
+        input_left + 2.0 * dpi * scale,
+        hint_y,
+        12.5 * dpi * scale,
+        theme.text_secondary,
+        false,
+    );
+
+    // 8. Action Button
     let btn_w = 296.0 * dpi * scale;
     let btn_h = 40.0 * dpi * scale;
     let btn_left = cx - btn_w / 2.0;
-    let btn_top = top + 126.0 * dpi * scale;
+    let btn_top = top + 144.0 * dpi * scale;
     let btn_corner_r = 8.0 * dpi * scale;
 
     let btn_text = if state.is_submitting {

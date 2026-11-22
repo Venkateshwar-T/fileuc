@@ -207,28 +207,37 @@ impl QuickQrCardState {
         (left, top, card_w, card_h)
     }
 
+    pub fn scaled_card_bounds(&self, cx: f32, cy: f32) -> (f32, f32, f32, f32) {
+        let scale = if self.pop_in.value() > 0.0 { self.pop_in.value() } else { 1.0 };
+        let card_w = 328.0 * self.dpi_scale * scale;
+        let card_h = 418.0 * self.dpi_scale * scale;
+        let left = cx - card_w / 2.0;
+        let top = cy - card_h / 2.0;
+        (left, top, card_w, card_h)
+    }
+
     pub fn hit_test_card(&self, rel_x: f32, rel_y: f32, cx: f32, cy: f32) -> bool {
-        let (l, t, w, h) = self.card_bounds(cx, cy);
+        let (l, t, w, h) = self.scaled_card_bounds(cx, cy);
         let px = cx + rel_x;
         let py = cy + rel_y;
         px >= l && px <= l + w && py >= t && py <= t + h
     }
 
     pub fn hit_test_close(&self, rel_x: f32, rel_y: f32, cx: f32, cy: f32) -> bool {
-        let scale = self.pop_in.value();
-        let (l, t, w, _) = self.card_bounds(cx, cy);
+        let scale = if self.pop_in.value() > 0.0 { self.pop_in.value() } else { 1.0 };
+        let (l, t, w, _) = self.scaled_card_bounds(cx, cy);
         let close_x = l + w - 24.0 * self.dpi_scale * scale;
         let close_y = t + 24.0 * self.dpi_scale * scale;
         let px = cx + rel_x;
         let py = cy + rel_y;
         let dx = px - close_x;
         let dy = py - close_y;
-        (dx * dx + dy * dy).sqrt() <= 20.0 * self.dpi_scale
+        (dx * dx + dy * dy).sqrt() <= 20.0 * self.dpi_scale * scale
     }
 
     pub fn hit_test_save(&self, rel_x: f32, rel_y: f32, cx: f32, cy: f32) -> bool {
-        let scale = self.pop_in.value();
-        let (_, t, _, _) = self.card_bounds(cx, cy);
+        let scale = if self.pop_in.value() > 0.0 { self.pop_in.value() } else { 1.0 };
+        let (_, t, _, _) = self.scaled_card_bounds(cx, cy);
         let btn_w = 288.0 * self.dpi_scale * scale;
         let btn_h = 42.0 * self.dpi_scale * scale;
         let btn_left = cx - btn_w / 2.0;
@@ -241,8 +250,8 @@ impl QuickQrCardState {
     }
 
     pub fn hit_test_tab(&self, rel_x: f32, rel_y: f32, cx: f32, cy: f32) -> Option<QuickQrTab> {
-        let scale = self.pop_in.value();
-        let (_, t, _, _) = self.card_bounds(cx, cy);
+        let scale = if self.pop_in.value() > 0.0 { self.pop_in.value() } else { 1.0 };
+        let (_, t, _, _) = self.scaled_card_bounds(cx, cy);
         let tab_w = 240.0 * self.dpi_scale * scale;
         let tab_h = 30.0 * self.dpi_scale * scale;
         let tab_left = cx - tab_w / 2.0;
@@ -570,10 +579,10 @@ pub fn render_quick_qr_card(
 
     draw_input_box(pixmap, input_left, input_top, input_w, input_h, input_r, scale, dpi, theme);
 
-    // 10. Large, Prominent Input Text & Blinking Cursor (16.5px font size)
+    // 10. Large, Prominent Input Text & Blinking Cursor (16.0px font size)
     let text_start_x = input_left + 14.0 * dpi * scale;
     let input_center_y = input_top + input_h / 2.0;
-    let font_size = 16.5 * dpi * scale;
+    let font_size = 16.0 * dpi * scale;
     let max_text_w = input_w - 28.0 * dpi * scale;
 
     let cursor_x = if state.input_text.is_empty() {
@@ -587,7 +596,7 @@ pub fn render_quick_qr_card(
             placeholder,
             text_start_x,
             input_center_y,
-            14.5 * dpi * scale,
+            font_size,
             theme.text_secondary,
             false,
         );

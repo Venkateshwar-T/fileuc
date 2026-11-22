@@ -84,6 +84,13 @@ impl BulkRenameCardState {
         (center_x - w / 2.0, center_y - h / 2.0, w, h)
     }
 
+    pub fn scaled_card_bounds(&self, center_x: f32, center_y: f32) -> (f32, f32, f32, f32) {
+        let scale = if self.pop_in.value() > 0.0 { self.pop_in.value() } else { 1.0 };
+        let w = 340.0 * self.dpi_scale * scale;
+        let h = 204.0 * self.dpi_scale * scale;
+        (center_x - w / 2.0, center_y - h / 2.0, w, h)
+    }
+
     pub fn tick(&mut self, dt: f32) -> bool {
         let animating = self.pop_in.tick(dt);
         let cur_visible = is_cursor_visible();
@@ -95,28 +102,30 @@ impl BulkRenameCardState {
     }
 
     pub fn hit_test_card(&self, rel_x: f32, rel_y: f32, cx: f32, cy: f32) -> bool {
-        let (l, t, w, h) = self.card_bounds(cx, cy);
+        let (l, t, w, h) = self.scaled_card_bounds(cx, cy);
         let px = cx + rel_x;
         let py = cy + rel_y;
         px >= l && px <= l + w && py >= t && py <= t + h
     }
 
     pub fn hit_test_close(&self, rel_x: f32, rel_y: f32, cx: f32, cy: f32) -> bool {
-        let (l, t, w, _) = self.card_bounds(cx, cy);
-        let btn_x = l + w - 22.0 * self.dpi_scale;
-        let btn_y = t + 22.0 * self.dpi_scale;
+        let scale = if self.pop_in.value() > 0.0 { self.pop_in.value() } else { 1.0 };
+        let (l, t, w, _) = self.scaled_card_bounds(cx, cy);
+        let btn_x = l + w - 22.0 * self.dpi_scale * scale;
+        let btn_y = t + 22.0 * self.dpi_scale * scale;
         let px = cx + rel_x;
         let py = cy + rel_y;
         let dist = ((px - btn_x).powi(2) + (py - btn_y).powi(2)).sqrt();
-        dist <= 18.0 * self.dpi_scale
+        dist <= 18.0 * self.dpi_scale * scale
     }
 
     pub fn hit_test_submit(&self, rel_x: f32, rel_y: f32, cx: f32, cy: f32) -> bool {
-        let (_, t, _, _) = self.card_bounds(cx, cy);
-        let btn_h = 40.0 * self.dpi_scale;
-        let btn_w = 296.0 * self.dpi_scale;
+        let scale = if self.pop_in.value() > 0.0 { self.pop_in.value() } else { 1.0 };
+        let (_, t, _, _) = self.scaled_card_bounds(cx, cy);
+        let btn_h = 40.0 * self.dpi_scale * scale;
+        let btn_w = 296.0 * self.dpi_scale * scale;
         let btn_x = cx - btn_w / 2.0;
-        let btn_y = t + 144.0 * self.dpi_scale;
+        let btn_y = t + 144.0 * self.dpi_scale * scale;
         let px = cx + rel_x;
         let py = cy + rel_y;
 
@@ -194,6 +203,7 @@ pub fn render_bulk_rename_card(
     draw_input_box(pixmap, input_x, input_y, input_w, input_h, in_corner_r, scale, dpi, theme);
 
     let input_center_y = input_y + input_h / 2.0;
+    let font_size = 16.0 * dpi * scale;
 
     // Input text / placeholder (vertically centered)
     if state.input_text.is_empty() {
@@ -202,7 +212,7 @@ pub fn render_bulk_rename_card(
             "Base name (e.g. Trip)",
             input_x + 14.0 * dpi * scale,
             input_center_y,
-            14.5 * dpi * scale,
+            font_size,
             theme.text_secondary,
             false,
         );
@@ -212,7 +222,7 @@ pub fn render_bulk_rename_card(
             &state.input_text,
             input_x + 14.0 * dpi * scale,
             input_center_y,
-            15.5 * dpi * scale,
+            font_size,
             theme.text_primary,
             true,
         );
@@ -223,7 +233,7 @@ pub fn render_bulk_rename_card(
         let text_w = if state.input_text.is_empty() {
             0.0
         } else {
-            fonts.measure_text(&state.input_text, 15.5 * dpi * scale, true)
+            fonts.measure_text(&state.input_text, font_size, true)
         };
         let cursor_x = input_x + 14.0 * dpi * scale + text_w + 2.0 * dpi * scale;
         let cursor_half = 9.0 * dpi * scale;

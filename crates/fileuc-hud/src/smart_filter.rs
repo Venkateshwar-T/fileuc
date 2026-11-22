@@ -59,6 +59,15 @@ pub fn get_action_children(action: ConversionAction) -> Option<&'static [Convers
     }
 }
 
+fn canonicalize_ext(ext: &str) -> &str {
+    match ext {
+        "jpeg" => "jpg",
+        "tiff" => "tif",
+        "htm" => "html",
+        other => other,
+    }
+}
+
 pub fn filter_actions(files: &[impl AsRef<Path>], has_ffmpeg: bool) -> Vec<ConversionAction> {
     if files.is_empty() {
         return vec![ConversionAction::CreateZip];
@@ -106,15 +115,15 @@ pub fn filter_actions(files: &[impl AsRef<Path>], has_ffmpeg: bool) -> Vec<Conve
                     })
                     .collect();
                 if !all_exts.is_empty() {
-                    let first_ext = &all_exts[0];
-                    if all_exts.iter().all(|e| e == first_ext) {
-                        match first_ext.as_str() {
+                    let first_canon = canonicalize_ext(&all_exts[0]);
+                    if all_exts.iter().all(|e| canonicalize_ext(e) == first_canon) {
+                        match first_canon {
                             "png" => img_actions.retain(|&a| a != ConversionAction::ToPng),
-                            "jpg" | "jpeg" => img_actions
+                            "jpg" => img_actions
                                 .retain(|&a| a != ConversionAction::ToJpg && a != ConversionAction::ToJpeg),
                             "webp" => img_actions.retain(|&a| a != ConversionAction::ToWebp),
                             "bmp" => img_actions.retain(|&a| a != ConversionAction::ToBmp),
-                            "tiff" | "tif" => img_actions.retain(|&a| a != ConversionAction::ToTiff),
+                            "tif" => img_actions.retain(|&a| a != ConversionAction::ToTiff),
                             "ico" => img_actions.retain(|&a| a != ConversionAction::IconGroup && a != ConversionAction::ToIco),
                             "svg" => img_actions.retain(|&a| a != ConversionAction::ToSvg),
                             _ => {}
@@ -294,6 +303,66 @@ pub fn filter_actions(files: &[impl AsRef<Path>], has_ffmpeg: bool) -> Vec<Conve
     actions
 }
 
+fn has_encrypt_dictionary(buf: &[u8]) -> bool {
+    let pattern = b"/Encrypt";
+    let mut offset = 0;
+    while let Some(pos) = buf[offset..].windows(pattern.len()).position(|w| w == pattern) {
+        let abs_pos = offset + pos;
+        offset = abs_pos + pattern.len();
+
+        // Must not be preceded by alphanumeric char (part of longer token)
+        if abs_pos > 0 && buf[abs_pos - 1].is_ascii_alphanumeric() {
+            continue;
+        }
+
+        // Skip whitespace following /Encrypt
+        let rest = &buf[abs_pos + pattern.len()..];
+        let mut idx = 0;
+        while idx < rest.len() && rest[idx].is_ascii_whitespace() {
+            idx += 1;
+        }
+
+        if idx >= rest.len() {
+            continue;
+        }
+
+        // Case 1: Direct dictionary syntax "<<"
+        if rest[idx..].starts_with(b"<<") {
+            return true;
+        }
+
+        // Case 2: Indirect object reference syntax, e.g. "4 0 R"
+        let after_ws = &rest[idx..];
+        let mut p = 0;
+        while p < after_ws.len() && after_ws[p].is_ascii_digit() {
+            p += 1;
+        }
+        if p > 0 && p < after_ws.len() && after_ws[p].is_ascii_whitespace() {
+            while p < after_ws.len() && after_ws[p].is_ascii_whitespace() {
+                p += 1;
+            }
+            let gen_start = p;
+            while p < after_ws.len() && after_ws[p].is_ascii_digit() {
+                p += 1;
+            }
+            if p > gen_start && p < after_ws.len() && after_ws[p].is_ascii_whitespace() {
+                while p < after_ws.len() && after_ws[p].is_ascii_whitespace() {
+                    p += 1;
+                }
+                if p < after_ws.len() && after_ws[p] == b'R' {
+                    if p + 1 == after_ws.len()
+                        || after_ws[p + 1].is_ascii_whitespace()
+                        || matches!(after_ws[p + 1], b'/' | b'>' | b']')
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
 pub fn is_pdf_encrypted(path: &Path) -> bool {
     let Ok(mut file) = std::fs::File::open(path) else {
         return false;
@@ -310,7 +379,7 @@ pub fn is_pdf_encrypted(path: &Path) -> bool {
     let mut buf = vec![0u8; read_size];
     if file.seek(SeekFrom::End(-(read_size as i64))).is_ok() {
         if file.read_exact(&mut buf).is_ok() {
-            if buf.windows(8).any(|w| w == b"/Encrypt") {
+            if has_encrypt_dictionary(&buf) {
                 return true;
             }
         }
@@ -320,10 +389,54 @@ pub fn is_pdf_encrypted(path: &Path) -> bool {
     let mut head_buf = vec![0u8; head_size];
     if file.seek(SeekFrom::Start(0)).is_ok() {
         if file.read_exact(&mut head_buf).is_ok() {
-            if head_buf.windows(8).any(|w| w == b"/Encrypt") {
+            if has_encrypt_dictionary(&head_buf) {
                 return true;
             }
         }
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn test_has_encrypt_dictionary() {
+        // Direct dictionary
+        let sample1 = b"<< /Size 25 /Encrypt << /Filter /Standard /V 2 >> /Root 1 0 R >>";
+        assert!(has_encrypt_dictionary(sample1));
+
+        // Indirect object reference
+        let sample2 = b"trailer << /Size 50 /Root 1 0 R /Encrypt 4 0 R /ID [<1234><5678>] >>";
+        assert!(has_encrypt_dictionary(sample2));
+
+        // Multi-digit indirect object reference
+        let sample3 = b"/Encrypt  128  0  R /Info 2 0 R";
+        assert!(has_encrypt_dictionary(sample3));
+
+        // Plain text mentioning /Encrypt inside a content stream or metadata
+        let sample4 = b"BT /F1 12 Tf (The /Encrypt algorithm is AES-256) Tj ET";
+        assert!(!has_encrypt_dictionary(sample4));
+
+        // Delimited or compounded keyword
+        let sample5 = b"/NonEncrypt 4 0 R";
+        assert!(!has_encrypt_dictionary(sample5));
+    }
+
+    #[test]
+    fn test_filter_actions_synonym_extensions() {
+        let files = vec![
+            PathBuf::from(r"C:\test\photo1.jpg"),
+            PathBuf::from(r"C:\test\photo2.jpeg"),
+        ];
+        let actions = filter_actions(&files, false);
+        // Both are JPEG synonyms, so ToJpg should be suppressed
+        assert!(!actions.contains(&ConversionAction::ToJpg));
+        assert!(!actions.contains(&ConversionAction::ToJpeg));
+        // Other image conversions remain
+        assert!(actions.contains(&ConversionAction::ToPng));
+        assert!(actions.contains(&ConversionAction::ToWebp));
+    }
 }

@@ -137,7 +137,14 @@ impl ReduceSizeCardState {
 
     pub fn card_bounds(&self, center_x: f32, center_y: f32) -> (f32, f32, f32, f32) {
         let w = 260.0 * self.dpi_scale;
-        let h = 236.0 * self.dpi_scale;
+        let h = 230.0 * self.dpi_scale;
+        (center_x - w / 2.0, center_y - h / 2.0, w, h)
+    }
+
+    pub fn scaled_card_bounds(&self, center_x: f32, center_y: f32) -> (f32, f32, f32, f32) {
+        let scale = if self.pop_in.value() > 0.0 { self.pop_in.value() } else { 1.0 };
+        let w = 260.0 * self.dpi_scale * scale;
+        let h = 230.0 * self.dpi_scale * scale;
         (center_x - w / 2.0, center_y - h / 2.0, w, h)
     }
 
@@ -152,31 +159,33 @@ impl ReduceSizeCardState {
     }
 
     pub fn hit_test_card(&self, rel_x: f32, rel_y: f32, cx: f32, cy: f32) -> bool {
-        let (l, t, w, h) = self.card_bounds(cx, cy);
+        let (l, t, w, h) = self.scaled_card_bounds(cx, cy);
         let px = cx + rel_x;
         let py = cy + rel_y;
         px >= l && px <= l + w && py >= t && py <= t + h
     }
 
     pub fn hit_test_close(&self, rel_x: f32, rel_y: f32, cx: f32, cy: f32) -> bool {
-        let (l, t, w, _) = self.card_bounds(cx, cy);
-        let btn_x = l + w - 22.0 * self.dpi_scale;
-        let btn_y = t + 22.0 * self.dpi_scale;
+        let scale = if self.pop_in.value() > 0.0 { self.pop_in.value() } else { 1.0 };
+        let (l, t, w, _) = self.scaled_card_bounds(cx, cy);
+        let btn_x = l + w - 22.0 * self.dpi_scale * scale;
+        let btn_y = t + 22.0 * self.dpi_scale * scale;
         let px = cx + rel_x;
         let py = cy + rel_y;
         let dist = ((px - btn_x).powi(2) + (py - btn_y).powi(2)).sqrt();
-        dist <= 18.0 * self.dpi_scale
+        dist <= 18.0 * self.dpi_scale * scale
     }
 
     pub fn hit_test_unit(&self, rel_x: f32, rel_y: f32, cx: f32, cy: f32) -> Option<SizeUnit> {
-        let (_, top, _, _) = self.card_bounds(cx, cy);
+        let scale = if self.pop_in.value() > 0.0 { self.pop_in.value() } else { 1.0 };
+        let (_, top, _, _) = self.scaled_card_bounds(cx, cy);
         let px = cx + rel_x;
         let py = cy + rel_y;
 
-        let tab_w = 140.0 * self.dpi_scale;
-        let tab_h = 30.0 * self.dpi_scale;
+        let tab_w = 140.0 * self.dpi_scale * scale;
+        let tab_h = 30.0 * self.dpi_scale * scale;
         let tab_left = cx - tab_w / 2.0;
-        let tabs_y = top + 64.0 * self.dpi_scale;
+        let tabs_y = top + 64.0 * self.dpi_scale * scale;
 
         if px >= tab_left && px <= tab_left + tab_w && py >= tabs_y && py <= tabs_y + tab_h {
             if px < cx {
@@ -194,11 +203,12 @@ impl ReduceSizeCardState {
     }
 
     pub fn hit_test_submit(&self, rel_x: f32, rel_y: f32, cx: f32, cy: f32) -> bool {
-        let (_, t, _, _) = self.card_bounds(cx, cy);
-        let btn_h = 40.0 * self.dpi_scale;
-        let btn_w = 216.0 * self.dpi_scale;
+        let scale = if self.pop_in.value() > 0.0 { self.pop_in.value() } else { 1.0 };
+        let (_, t, _, _) = self.scaled_card_bounds(cx, cy);
+        let btn_h = 40.0 * self.dpi_scale * scale;
+        let btn_w = 216.0 * self.dpi_scale * scale;
         let btn_x = cx - btn_w / 2.0;
-        let btn_y = t + 174.0 * self.dpi_scale;
+        let btn_y = t + 168.0 * self.dpi_scale * scale;
         let px = cx + rel_x;
         let py = cy + rel_y;
 
@@ -224,7 +234,7 @@ pub fn render_reduce_size_card(
     let dpi = state.dpi_scale;
 
     let base_w = 260.0 * dpi;
-    let base_h = 236.0 * dpi;
+    let base_h = 230.0 * dpi;
     let half_w = (base_w / 2.0) * scale;
     let half_h = (base_h / 2.0) * scale;
     let left = cx - half_w;
@@ -329,13 +339,14 @@ pub fn render_reduce_size_card(
     // 7. Number-only Input Field
     let input_y = top + 120.0 * dpi * scale;
     let input_w = 216.0 * dpi * scale;
-    let input_h = 38.0 * dpi * scale;
+    let input_h = 40.0 * dpi * scale;
     let input_x = cx - input_w / 2.0;
     let in_corner_r = 8.0 * dpi * scale;
 
     draw_input_box(pixmap, input_x, input_y, input_w, input_h, in_corner_r, scale, dpi, theme);
 
     let input_center_y = input_y + input_h / 2.0;
+    let font_size = 16.0 * dpi * scale;
 
     // Centered input text / placeholder
     if state.input_text.is_empty() {
@@ -348,7 +359,7 @@ pub fn render_reduce_size_card(
             placeholder,
             cx,
             input_center_y,
-            14.5 * dpi * scale,
+            font_size,
             theme.text_secondary,
             false,
         );
@@ -358,7 +369,7 @@ pub fn render_reduce_size_card(
             &state.input_text,
             cx,
             input_center_y,
-            16.0 * dpi * scale,
+            font_size,
             theme.text_primary,
             true,
         );
@@ -385,8 +396,8 @@ pub fn render_reduce_size_card(
         }
     }
 
-    // 8. Action Button [ Reduce Size ]
-    let btn_y = top + 174.0 * dpi * scale;
+    // 8. Action Button [ Reduce Size ] (tight 8px gap matching Lock popup!)
+    let btn_y = top + 168.0 * dpi * scale;
     let btn_w = 216.0 * dpi * scale;
     let btn_h = 40.0 * dpi * scale;
     let btn_x = cx - btn_w / 2.0;

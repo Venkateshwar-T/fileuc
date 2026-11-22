@@ -71,6 +71,26 @@
           />
         </div>
       </div>
+
+      <div class="h-px bg-dark-border w-full"></div>
+
+      <div>
+        <div class="text-sm font-semibold text-gray-100">Search Box HUD</div>
+        <div class="text-xs text-gray-400 mt-0.5 leading-normal">
+          Summon floating search bar and quick action chips for selected files or folders
+        </div>
+
+        <div class="mt-2.5">
+          <ShortcutRecorder
+            value={store.settings.search_shortcut}
+            defaultValue="Ctrl+Space"
+            onchange={(val) => {
+              store.settings.search_shortcut = val;
+              store.saveSettings();
+            }}
+          />
+        </div>
+      </div>
     </Card>
   </div>
 

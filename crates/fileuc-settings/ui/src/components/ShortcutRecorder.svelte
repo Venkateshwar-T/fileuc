@@ -133,7 +133,7 @@
     <div class="flex items-center gap-1.5" title="Current shortcut trigger">
       {#each keyBadges as k, idx}
         <kbd
-          class="px-2 py-0.5 text-xs font-semibold text-gray-200 bg-dark-card border border-dark-border rounded shadow-sm font-mono"
+          class="px-2 py-0.5 text-[11.5px] font-sans font-medium text-gray-200 bg-dark-card border border-dark-border rounded shadow-sm"
         >
           {k}
         </kbd>
@@ -143,14 +143,14 @@
       {/each}
     </div>
 
-    <!-- Record Button (matched to accent color of switches and active tabs) -->
+    <!-- Configure Button (matched to accent color of switches and active tabs) -->
     <button
       type="button"
       onclick={startRecording}
-      title="Click to record new shortcut"
+      title="Click to configure new shortcut"
       class="px-3 py-1 text-xs font-semibold text-white bg-accent hover:bg-accent-hover rounded-md shadow-sm transition-all duration-150 cursor-pointer"
     >
-      Record
+      Configure
     </button>
 
     <!-- Restore to Default Button -->

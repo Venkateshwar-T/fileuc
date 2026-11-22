@@ -180,6 +180,13 @@ pub fn download_and_install_update<R: tauri::Runtime>(
 ) -> Result<(), String> {
     use tauri::Emitter;
 
+    // Security: Enforce strict HTTPS GitHub release allowlisting
+    let is_allowed_host = download_url.starts_with("https://github.com/Sharad-Chand/FileUC/releases/download/")
+        || download_url.starts_with("https://objects.githubusercontent.com/");
+    if !is_allowed_host {
+        return Err("Untrusted download source: Updates must come directly from official FileUC GitHub releases.".to_string());
+    }
+
     // If download url is not an installer, fallback to browser
     let is_direct_installer = download_url.ends_with(".exe") || download_url.contains("Setup");
     if !is_direct_installer {
@@ -391,6 +398,10 @@ pub fn download_and_install_update<R: tauri::Runtime>(
 }
 
 pub fn open_url_in_browser(url: &str) -> Result<(), String> {
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return Err("Invalid URL protocol: Only HTTP/HTTPS URLs are permitted.".to_string());
+    }
+
     #[cfg(windows)]
     {
         use windows::core::HSTRING;
@@ -408,11 +419,7 @@ pub fn open_url_in_browser(url: &str) -> Result<(), String> {
                 SW_SHOWNORMAL,
             );
             if (res.0 as isize) <= 32 {
-                use std::os::windows::process::CommandExt;
-                let mut cmd = std::process::Command::new("cmd");
-                cmd.args(["/c", "start", "", url]);
-                cmd.creation_flags(0x08000000);
-                cmd.spawn().map_err(|e| format!("Failed to open URL: {e}"))?;
+                return Err(format!("ShellExecuteW failed to open URL (error code: {})", res.0 as isize));
             }
         }
         Ok(())

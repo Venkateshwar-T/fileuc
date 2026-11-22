@@ -249,8 +249,32 @@ impl HudWindow {
     }
 
     pub fn move_to(&mut self, new_screen_x: i32, new_screen_y: i32) -> (i32, i32) {
-        self.screen_x = new_screen_x;
-        self.screen_y = new_screen_y;
+        let target_cx = new_screen_x + (self.size as i32 / 2);
+        let target_cy = new_screen_y + (self.size as i32 / 2);
+        let pt = POINT { x: target_cx, y: target_cy };
+        let hmon = unsafe { MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST) };
+        let mut minfo = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        let (work_left, work_top, work_right, work_bottom) = unsafe {
+            if GetMonitorInfoW(hmon, &mut minfo).as_bool() {
+                (
+                    minfo.rcWork.left,
+                    minfo.rcWork.top,
+                    minfo.rcWork.right,
+                    minfo.rcWork.bottom,
+                )
+            } else {
+                (0, 0, 1920, 1080)
+            }
+        };
+
+        let max_x = (work_right - self.size as i32).max(work_left);
+        let max_y = (work_bottom - self.size as i32).max(work_top);
+
+        self.screen_x = new_screen_x.clamp(work_left, max_x);
+        self.screen_y = new_screen_y.clamp(work_top, max_y);
         self.center_x = self.screen_x + (self.size as i32 / 2);
         self.center_y = self.screen_y + (self.size as i32 / 2);
 

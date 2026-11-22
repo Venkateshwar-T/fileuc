@@ -11,7 +11,6 @@ const AC_SRC_ALPHA: u8 = 1;
 pub struct BlitSurface {
     width: u32,
     height: u32,
-    bgra: Vec<u8>,
     gdi_context: Option<GdiContext>,
 }
 
@@ -39,7 +38,6 @@ impl BlitSurface {
         Self {
             width,
             height,
-            bgra: vec![0u8; (width * height * 4) as usize],
             gdi_context: None,
         }
     }
@@ -58,7 +56,7 @@ impl BlitSurface {
                 std::slice::from_raw_parts(gdi.bits, (self.width * self.height * 4) as usize)
             }
         } else {
-            &self.bgra
+            &[]
         }
     }
 
@@ -127,32 +125,50 @@ impl BlitSurface {
 
     pub fn update_from_pixmap(&mut self, pixmap: &tiny_skia::Pixmap) {
         self.ensure_gdi_context();
+
+        let p_w = pixmap.width();
+        let p_h = pixmap.height();
+        let s_w = self.width;
+        let s_h = self.height;
+
+        if p_w == 0 || p_h == 0 || s_w == 0 || s_h == 0 {
+            return;
+        }
+
         let src = pixmap.data();
-        let len = (self.width * self.height * 4) as usize;
-        let copy_len = src.len().min(len);
 
         if let Some(ref gdi) = self.gdi_context {
             unsafe {
-                let dest = std::slice::from_raw_parts_mut(gdi.bits, copy_len);
-                for (s, d) in src[..copy_len]
-                    .chunks_exact(4)
-                    .zip(dest.chunks_exact_mut(4))
-                {
-                    d[0] = s[2]; // B
-                    d[1] = s[1]; // G
-                    d[2] = s[0]; // R
-                    d[3] = s[3]; // A
+                let dest = std::slice::from_raw_parts_mut(gdi.bits, (s_w * s_h * 4) as usize);
+
+                if p_w == s_w && p_h == s_h {
+                    let copy_len = (s_w * s_h * 4) as usize;
+                    for (s, d) in src[..copy_len].chunks_exact(4).zip(dest.chunks_exact_mut(4)) {
+                        d[0] = s[2]; // B
+                        d[1] = s[1]; // G
+                        d[2] = s[0]; // R
+                        d[3] = s[3]; // A
+                    }
+                } else {
+                    // Stride-aware row-by-row copy for mismatched dimensions to prevent shearing
+                    let copy_w = p_w.min(s_w) as usize;
+                    let copy_h = p_h.min(s_h) as usize;
+                    let src_stride = (p_w * 4) as usize;
+                    let dst_stride = (s_w * 4) as usize;
+
+                    dest.fill(0);
+
+                    for row in 0..copy_h {
+                        let src_row = &src[row * src_stride..row * src_stride + copy_w * 4];
+                        let dst_row = &mut dest[row * dst_stride..row * dst_stride + copy_w * 4];
+                        for (s, d) in src_row.chunks_exact(4).zip(dst_row.chunks_exact_mut(4)) {
+                            d[0] = s[2]; // B
+                            d[1] = s[1]; // G
+                            d[2] = s[0]; // R
+                            d[3] = s[3]; // A
+                        }
+                    }
                 }
-            }
-        } else {
-            for (s, d) in src[..copy_len]
-                .chunks_exact(4)
-                .zip(self.bgra.chunks_exact_mut(4))
-            {
-                d[0] = s[2]; // B
-                d[1] = s[1]; // G
-                d[2] = s[0]; // R
-                d[3] = s[3]; // A
             }
         }
     }

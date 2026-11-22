@@ -201,11 +201,21 @@ impl QrCardState {
         (left, top, card_w, card_h)
     }
 
+    pub fn scaled_card_bounds(&self, cx: f32, cy: f32) -> (f32, f32, f32, f32) {
+        let scale = if self.pop_in.value() > 0.0 { self.pop_in.value() } else { 1.0 };
+        let card_w = 290.0 * self.dpi_scale * scale;
+        let card_h = 400.0 * self.dpi_scale * scale;
+        let left = cx - card_w / 2.0;
+        let top = cy - card_h / 2.0;
+        (left, top, card_w, card_h)
+    }
+
     pub fn hit_test_close(&self, rel_x: f32, rel_y: f32, cx: f32, cy: f32) -> bool {
-        let (left, top, w, _) = self.card_bounds(cx, cy);
-        let btn_cx = left + w - 24.0 * self.dpi_scale;
-        let btn_cy = top + 24.0 * self.dpi_scale;
-        let hit_radius = 18.0 * self.dpi_scale;
+        let scale = if self.pop_in.value() > 0.0 { self.pop_in.value() } else { 1.0 };
+        let (left, top, w, _) = self.scaled_card_bounds(cx, cy);
+        let btn_cx = left + w - 24.0 * self.dpi_scale * scale;
+        let btn_cy = top + 24.0 * self.dpi_scale * scale;
+        let hit_radius = 18.0 * self.dpi_scale * scale;
         let dx = (cx + rel_x) - btn_cx;
         let dy = (cy + rel_y) - btn_cy;
         (dx * dx + dy * dy) <= (hit_radius * hit_radius)
@@ -217,9 +227,9 @@ impl QrCardState {
         if !show_qr_pad {
             return false;
         }
-        let scale = self.pop_in.value();
+        let scale = if self.pop_in.value() > 0.0 { self.pop_in.value() } else { 1.0 };
         let dpi = self.dpi_scale;
-        let (_, top, _, _) = self.card_bounds(cx, cy);
+        let (_, top, _, _) = self.scaled_card_bounds(cx, cy);
         let tabs_y = top + 64.0 * dpi * scale;
         let tab_h = 32.0 * dpi * scale;
         let pad_size = 176.0 * dpi * scale;
@@ -245,8 +255,8 @@ impl QrCardState {
     }
 
     pub fn hit_test_tab(&self, rel_x: f32, rel_y: f32, cx: f32, cy: f32) -> Option<QrShareTab> {
-        let scale = self.pop_in.value();
-        let (_, top, _, _) = self.card_bounds(cx, cy);
+        let scale = if self.pop_in.value() > 0.0 { self.pop_in.value() } else { 1.0 };
+        let (_, top, _, _) = self.scaled_card_bounds(cx, cy);
         let px = cx + rel_x;
         let py = cy + rel_y;
 
@@ -271,9 +281,9 @@ impl QrCardState {
         if self.tab != QrShareTab::Internet || self.is_cloudflared_installed || self.is_downloading {
             return false;
         }
-        let scale = self.pop_in.value();
+        let scale = if self.pop_in.value() > 0.0 { self.pop_in.value() } else { 1.0 };
         let dpi = self.dpi_scale;
-        let (_, top, _, _) = self.card_bounds(cx, cy);
+        let (_, top, _, _) = self.scaled_card_bounds(cx, cy);
         let tab_h = 32.0 * dpi * scale;
         let tabs_y = top + 64.0 * dpi * scale;
         let tabs_bottom = tabs_y + tab_h;
@@ -289,7 +299,7 @@ impl QrCardState {
     }
 
     pub fn hit_test_card(&self, rel_x: f32, rel_y: f32, cx: f32, cy: f32) -> bool {
-        let (left, top, w, h) = self.card_bounds(cx, cy);
+        let (left, top, w, h) = self.scaled_card_bounds(cx, cy);
         let px = cx + rel_x;
         let py = cy + rel_y;
         px >= left && px <= (left + w) && py >= top && py <= (top + h)
@@ -879,6 +889,9 @@ mod tests {
     #[test]
     fn test_qr_card_copy_button_hit_testing_and_url() {
         let mut card = QrCardState::new("http://192.168.1.100:8080/share/abc", "test.mp4", 1024, 1.0).unwrap();
+        for _ in 0..60 {
+            card.tick(1.0 / 60.0);
+        }
         assert_eq!(card.current_share_url(), Some("http://192.168.1.100:8080/share/abc"));
 
         let cx = 240.0;

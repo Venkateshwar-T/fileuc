@@ -22,6 +22,7 @@ export interface UpdateCheckResponse {
 export interface AppSettings {
   trigger_modifier: string;
   qr_shortcut: string;
+  search_shortcut: string;
   theme: ThemeChoice;
   accent_color: string;
   ffmpeg_path: string | null;
@@ -49,6 +50,7 @@ export function createSettingsStore() {
   let settings = $state<AppSettings>({
     trigger_modifier: 'Ctrl',
     qr_shortcut: 'Ctrl+Shift+Q',
+    search_shortcut: 'Ctrl+Space',
     theme: 'Dark',
     accent_color: '#7066E0',
     ffmpeg_path: null,
@@ -80,7 +82,7 @@ export function createSettingsStore() {
   let bannerDismissed = $state<boolean>(false);
   let isCheckingUpdate = $state<boolean>(false);
   let updateStatusMessage = $state<string>('');
-  let currentAppVersion = $state<string>('0.1.4');
+  let currentAppVersion = $state<string>('0.1.5');
   let isUpdating = $state<boolean>(false);
   let updateProgress = $state<number>(0);
   let updateProgressText = $state<string>('');

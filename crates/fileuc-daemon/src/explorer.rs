@@ -6,11 +6,55 @@ use windows::Win32::UI::Shell::{
     IShellBrowser, IShellView, IShellWindows, ShellWindows, SID_STopLevelBrowser, SVGIO_SELECTION,
     SWC_DESKTOP, SWFO_NEEDDISPATCH,
 };
-use windows::Win32::Foundation::{HWND, POINT};
+use windows::Win32::Foundation::{BOOL, HWND, LPARAM, POINT};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetAncestor, GetClassNameW, GetCursorPos, GetForegroundWindow, WindowFromPoint, GA_ROOT,
+    EnumChildWindows, GetAncestor, GetClassNameW, GetCursorPos, GetForegroundWindow,
+    GetGUIThreadInfo, GetWindowThreadProcessId, IsChild, IsWindowVisible, WindowFromPoint, GA_ROOT,
+    GUITHREADINFO,
 };
 use fileuc_hud::drop_target::parse_cf_hdrop;
+
+unsafe extern "system" fn enum_tab_child_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    let mut class_name = [0u16; 64];
+    let len = GetClassNameW(hwnd, &mut class_name);
+    if len > 0 {
+        let name = String::from_utf16_lossy(&class_name[..len as usize]);
+        if name == "ShellTabWindowClass" || name == "TabWindowClass" {
+            *(lparam.0 as *mut HWND) = hwnd;
+            return BOOL(0); // Found topmost/active tab in Z-order; stop enumeration
+        }
+    }
+    BOOL(1)
+}
+
+fn get_active_tab_hwnd(parent: HWND) -> HWND {
+    let mut active = HWND::default();
+    unsafe {
+        let _ = EnumChildWindows(
+            parent,
+            Some(enum_tab_child_proc),
+            LPARAM(&mut active as *mut _ as isize),
+        );
+    }
+    active
+}
+
+fn get_thread_focus_hwnd(target: HWND) -> HWND {
+    unsafe {
+        let mut pid = 0u32;
+        let tid = GetWindowThreadProcessId(target, Some(&mut pid));
+        if tid != 0 {
+            let mut gui = GUITHREADINFO {
+                cbSize: std::mem::size_of::<GUITHREADINFO>() as u32,
+                ..Default::default()
+            };
+            if GetGUIThreadInfo(tid, &mut gui).is_ok() {
+                return gui.hwndFocus;
+            }
+        }
+        HWND::default()
+    }
+}
 
 fn extract_files_from_browser(browser: &IShellBrowser) -> Option<Vec<PathBuf>> {
     unsafe {
@@ -161,7 +205,13 @@ pub fn get_selected_files_at(cursor_x: i32, cursor_y: i32) -> Vec<PathBuf> {
         };
 
         if !target_root.is_invalid() && !target_root.0.is_null() {
+            let active_tab = get_active_tab_hwnd(target_root);
+            let thread_focus = get_thread_focus_hwnd(target_root);
+            let has_tabs = !active_tab.is_invalid() && !active_tab.0.is_null();
+
             let count = sw.Count().unwrap_or(0);
+            let mut candidate_tabs: Vec<(i32, IShellBrowser)> = Vec::new();
+
             for i in 0..count {
                 let var = VARIANT::from(i);
                 let disp = match sw.Item(&var) {
@@ -184,19 +234,76 @@ pub fn get_selected_files_at(cursor_x: i32, cursor_y: i32) -> Vec<PathBuf> {
                     .ok()
                     .and_then(|ole| ole.GetWindow().ok());
 
-                let belongs = match win_hwnd {
-                    Some(h) => {
-                        h == target_root
-                            || GetAncestor(h, GA_ROOT) == target_root
-                            || h == hover_hwnd
-                            || h == fg_hwnd
-                            || (h.0 as isize == target_root.0 as isize)
-                    }
-                    None => false,
+                let tab_h = match win_hwnd {
+                    Some(h) if !h.is_invalid() && !h.0.is_null() => h,
+                    _ => continue,
                 };
 
-                if belongs {
-                    if let Some(files) = extract_files_from_browser(&browser) {
+                let belongs = tab_h == target_root
+                    || GetAncestor(tab_h, GA_ROOT) == target_root
+                    || tab_h == hover_hwnd
+                    || tab_h == fg_hwnd
+                    || (tab_h.0 as isize == target_root.0 as isize);
+
+                if !belongs {
+                    continue;
+                }
+
+                // Compute rank / score for candidate tab
+                let mut score = 0i32;
+
+                if has_tabs {
+                    // 1. Match against active tab control in Z-order (ShellTabWindowClass)
+                    if tab_h == active_tab
+                        || IsChild(tab_h, active_tab).as_bool()
+                        || IsChild(active_tab, tab_h).as_bool()
+                    {
+                        score += 100;
+                    }
+
+                    // 2. Match against thread keyboard focus
+                    if !thread_focus.is_invalid() && !thread_focus.0.is_null() {
+                        if tab_h == thread_focus || IsChild(tab_h, thread_focus).as_bool() {
+                            score += 80;
+                        }
+                    }
+
+                    // 3. Match against mouse hover
+                    if !hover_hwnd.is_invalid() && !hover_hwnd.0.is_null() {
+                        if tab_h == hover_hwnd || IsChild(tab_h, hover_hwnd).as_bool() {
+                            score += 50;
+                        }
+                    }
+
+                    // 4. Tab visibility
+                    if IsWindowVisible(tab_h).as_bool() {
+                        score += 10;
+                    }
+                } else {
+                    // Non-tabbed / single window
+                    if !hover_hwnd.is_invalid() && !hover_hwnd.0.is_null()
+                        && (tab_h == hover_hwnd || IsChild(tab_h, hover_hwnd).as_bool())
+                    {
+                        score += 50;
+                    }
+                    if !thread_focus.is_invalid() && !thread_focus.0.is_null()
+                        && (tab_h == thread_focus || IsChild(tab_h, thread_focus).as_bool())
+                    {
+                        score += 40;
+                    }
+                    score += 10;
+                }
+
+                candidate_tabs.push((score, browser));
+            }
+
+            // Sort candidate tabs descending by score
+            candidate_tabs.sort_by(|a, b| b.0.cmp(&a.0));
+
+            // Query the highest-ranking active tab
+            if let Some((best_score, best_browser)) = candidate_tabs.first() {
+                if !has_tabs || *best_score > 0 {
+                    if let Some(files) = extract_files_from_browser(best_browser) {
                         let valid: Vec<PathBuf> = files.into_iter().filter(|p| is_supported_user_file(p)).collect();
                         if !valid.is_empty() {
                             return valid;

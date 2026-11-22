@@ -18,11 +18,11 @@
       <button
         type="button"
         onclick={() => (store.activeTab = item.id)}
-        class="flex items-center justify-between w-full px-3 py-2 rounded-lg text-xs font-medium transition-all duration-150 {isActive ? 'text-accent' : 'text-gray-400 hover:text-gray-200 hover:bg-white/5'}"
+        class="flex items-center justify-between w-full px-3 py-2.5 rounded-lg text-[13.5px] font-medium transition-all duration-150 {isActive ? 'text-accent' : 'text-gray-400 hover:text-gray-200 hover:bg-white/5'}"
         style={isActive ? 'background-color: rgba(112, 102, 224, 0.15); color: #7066E0;' : ''}
       >
-        <div class="flex items-center gap-2.5">
-          <item.icon size={16} strokeWidth={2} class="shrink-0" />
+        <div class="flex items-center gap-3">
+          <item.icon size={18} strokeWidth={2} class="shrink-0" />
           <span class="leading-none">{item.label}</span>
         </div>
       </button>

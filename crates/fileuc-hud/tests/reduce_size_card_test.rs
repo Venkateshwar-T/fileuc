@@ -91,3 +91,20 @@ fn test_valid_submission_checks() {
     assert!(card.is_valid_submission());
     assert_eq!(card.target_bytes(), Some(200 * 1024));
 }
+
+#[test]
+fn test_reduce_size_hit_testing() {
+    let card = ReduceSizeCardState::new(1, 400 * 1024, 1.0);
+    let cx = 200.0;
+    let cy = 200.0;
+
+    // Center hits card
+    assert!(card.hit_test_card(0.0, 0.0, cx, cy));
+    assert!(!card.hit_test_card(300.0, 300.0, cx, cy));
+
+    // Submit button is at top + 168.0..208.0
+    // top = 200 - 115 = 85.0
+    // btn_top = 85 + 168 = 253.0
+    // rel_y = 60.0 -> py = 260.0 (inside 253..293)
+    assert!(card.hit_test_submit(0.0, 60.0, cx, cy));
+}

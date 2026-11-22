@@ -1,6 +1,7 @@
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -128,6 +129,7 @@ pub fn start_download(tx: Sender<DownloadProgress>) -> thread::JoinHandle<Result
 pub struct CloudflareTunnel {
     child: Arc<Mutex<Option<Child>>>,
     pub rx_url: Receiver<Result<String, String>>,
+    stopped: Arc<AtomicBool>,
 }
 
 impl CloudflareTunnel {
@@ -142,8 +144,14 @@ impl CloudflareTunnel {
 
         let child_holder = Arc::new(Mutex::new(None));
         let child_ref = child_holder.clone();
+        let stopped = Arc::new(AtomicBool::new(false));
+        let stopped_clone = stopped.clone();
 
         thread::spawn(move || {
+            if stopped_clone.load(Ordering::SeqCst) {
+                return;
+            }
+
             let mut cmd = Command::new(&exe_path);
             cmd.arg("tunnel")
                 .arg("--url")
@@ -158,9 +166,22 @@ impl CloudflareTunnel {
 
             match cmd.spawn() {
                 Ok(mut child) => {
+                    if stopped_clone.load(Ordering::SeqCst) {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return;
+                    }
                     let stderr = child.stderr.take();
                     let stdout = child.stdout.take();
-                    *child_ref.lock().unwrap() = Some(child);
+                    {
+                        let mut lock = child_ref.lock().unwrap_or_else(|e| e.into_inner());
+                        if stopped_clone.load(Ordering::SeqCst) {
+                            let _ = child.kill();
+                            let _ = child.wait();
+                            return;
+                        }
+                        *lock = Some(child);
+                    }
 
                     let mut found_url = None;
 
@@ -168,6 +189,9 @@ impl CloudflareTunnel {
                     if let Some(err) = stderr {
                         let reader = BufReader::new(err);
                         for line in reader.lines() {
+                            if stopped_clone.load(Ordering::SeqCst) {
+                                break;
+                            }
                             if let Ok(l) = line {
                                 if let Some(url) = extract_trycloudflare_url(&l) {
                                     found_url = Some(url);
@@ -180,10 +204,13 @@ impl CloudflareTunnel {
                     }
 
                     // Fallback to check stdout if not in stderr
-                    if found_url.is_none() {
+                    if found_url.is_none() && !stopped_clone.load(Ordering::SeqCst) {
                         if let Some(out) = stdout {
                             let reader = BufReader::new(out);
                             for line in reader.lines() {
+                                if stopped_clone.load(Ordering::SeqCst) {
+                                    break;
+                                }
                                 if let Ok(l) = line {
                                     if let Some(url) = extract_trycloudflare_url(&l) {
                                         found_url = Some(url);
@@ -194,6 +221,10 @@ impl CloudflareTunnel {
                                 }
                             }
                         }
+                    }
+
+                    if stopped_clone.load(Ordering::SeqCst) {
+                        return;
                     }
 
                     if let Some(base_url) = found_url {
@@ -216,10 +247,12 @@ impl CloudflareTunnel {
         Ok(Self {
             child: child_holder,
             rx_url: rx,
+            stopped,
         })
     }
 
     pub fn stop(&mut self) {
+        self.stopped.store(true, Ordering::SeqCst);
         if let Ok(mut lock) = self.child.lock() {
             if let Some(mut child) = lock.take() {
                 let _ = child.kill();

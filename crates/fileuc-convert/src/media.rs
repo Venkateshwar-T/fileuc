@@ -56,28 +56,79 @@ pub fn find_ffmpeg() -> Option<PathBuf> {
         .clone()
 }
 
+fn safe_path_arg(path: &Path) -> std::path::PathBuf {
+    let s = path.to_string_lossy();
+    if s.starts_with('-') {
+        #[cfg(windows)]
+        {
+            std::path::PathBuf::from(format!(".\\{}", s))
+        }
+        #[cfg(not(windows))]
+        {
+            std::path::PathBuf::from(format!("./{}", s))
+        }
+    } else {
+        path.to_path_buf()
+    }
+}
+
+struct TempFileGuard<'a>(&'a Path);
+impl<'a> Drop for TempFileGuard<'a> {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(self.0);
+    }
+}
+
 pub fn video_to_gif(ffmpeg: &Path, src: &Path, output: &Path) -> Result<(), ConvertError> {
     if !src.exists() {
         return Err(ConvertError::SourceNotFound(src.to_string_lossy().to_string()));
     }
     let guard = crate::output_guard::OutputGuard::new(output);
 
-    let mut cmd = Command::new(ffmpeg);
-    cmd.arg("-i")
-        .arg(src)
+    let temp_palette = std::env::temp_dir().join(format!("fileuc_palette_{}_{}.png", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)));
+    let _palette_cleanup = TempFileGuard(&temp_palette);
+
+    // Pass 1: Generate optimal color palette to a temporary PNG
+    let mut cmd1 = Command::new(ffmpeg);
+    cmd1.arg("-i")
+        .arg(safe_path_arg(src))
         .arg("-vf")
-        .arg("fps=15,scale=480:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse")
+        .arg("fps=15,scale=480:-1:flags=lanczos,palettegen")
         .arg("-y")
-        .arg(output);
+        .arg("--")
+        .arg(&temp_palette);
     #[cfg(windows)]
     {
-        cmd.creation_flags(CREATE_NO_WINDOW);
+        cmd1.creation_flags(CREATE_NO_WINDOW);
     }
-    let status = cmd
+    let status1 = cmd1
         .status()
-        .map_err(|e| ConvertError::IoError(format!("Failed to spawn ffmpeg: {}", e)))?;
+        .map_err(|e| ConvertError::IoError(format!("Failed to spawn ffmpeg palette pass: {}", e)))?;
 
-    if !status.success() {
+    if !status1.success() {
+        return Err(ConvertError::ConverterError("FFmpeg palette generation failed".to_string()));
+    }
+
+    // Pass 2: Apply palette linearly without buffering all raw frames in memory
+    let mut cmd2 = Command::new(ffmpeg);
+    cmd2.arg("-i")
+        .arg(safe_path_arg(src))
+        .arg("-i")
+        .arg(safe_path_arg(&temp_palette))
+        .arg("-lavfi")
+        .arg("fps=15,scale=480:-1:flags=lanczos [x]; [x][1:v] paletteuse")
+        .arg("-y")
+        .arg("--")
+        .arg(safe_path_arg(output));
+    #[cfg(windows)]
+    {
+        cmd2.creation_flags(CREATE_NO_WINDOW);
+    }
+    let status2 = cmd2
+        .status()
+        .map_err(|e| ConvertError::IoError(format!("Failed to spawn ffmpeg render pass: {}", e)))?;
+
+    if !status2.success() {
         return Err(ConvertError::ConverterError("FFmpeg video to GIF conversion failed".to_string()));
     }
     guard.disarm();
@@ -92,14 +143,15 @@ pub fn extract_audio(ffmpeg: &Path, src: &Path, output: &Path) -> Result<(), Con
 
     let mut cmd = Command::new(ffmpeg);
     cmd.arg("-i")
-        .arg(src)
+        .arg(safe_path_arg(src))
         .arg("-vn")
         .arg("-c:a")
         .arg("libmp3lame")
         .arg("-q:a")
         .arg("2")
         .arg("-y")
-        .arg(output);
+        .arg("--")
+        .arg(safe_path_arg(output));
     #[cfg(windows)]
     {
         cmd.creation_flags(CREATE_NO_WINDOW);
@@ -123,7 +175,7 @@ pub fn compress_video(ffmpeg: &Path, src: &Path, output: &Path) -> Result<(), Co
 
     let mut cmd = Command::new(ffmpeg);
     cmd.arg("-i")
-        .arg(src)
+        .arg(safe_path_arg(src))
         .arg("-vcodec")
         .arg("libx264")
         .arg("-crf")
@@ -131,7 +183,8 @@ pub fn compress_video(ffmpeg: &Path, src: &Path, output: &Path) -> Result<(), Co
         .arg("-preset")
         .arg("fast")
         .arg("-y")
-        .arg(output);
+        .arg("--")
+        .arg(safe_path_arg(output));
     #[cfg(windows)]
     {
         cmd.creation_flags(CREATE_NO_WINDOW);
@@ -158,7 +211,7 @@ pub fn convert_audio(
     }
 
     let mut cmd = Command::new(ffmpeg);
-    cmd.arg("-i").arg(src).arg("-vn");
+    cmd.arg("-i").arg(safe_path_arg(src)).arg("-vn");
 
     match target_format.to_ascii_lowercase().as_str() {
         "mp3" => {
@@ -184,7 +237,7 @@ pub fn convert_audio(
         }
     }
 
-    cmd.arg("-y").arg(output);
+    cmd.arg("-y").arg("--").arg(safe_path_arg(output));
 
     #[cfg(windows)]
     {

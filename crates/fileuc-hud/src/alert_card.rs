@@ -52,30 +52,41 @@ impl AlertCardState {
         (left, top, card_w, card_h)
     }
 
+    pub fn scaled_card_bounds(&self, cx: f32, cy: f32) -> (f32, f32, f32, f32) {
+        let scale = if self.pop_in.value() > 0.0 { self.pop_in.value() } else { 1.0 };
+        let card_w = 340.0 * self.dpi_scale * scale;
+        let card_h = 168.0 * self.dpi_scale * scale;
+        let left = cx - card_w / 2.0;
+        let top = cy - card_h / 2.0;
+        (left, top, card_w, card_h)
+    }
+
     pub fn hit_test_close(&self, rel_x: f32, rel_y: f32, cx: f32, cy: f32) -> bool {
-        let (left, top, w, _) = self.card_bounds(cx, cy);
-        let btn_cx = left + w - 22.0 * self.dpi_scale;
-        let btn_cy = top + 22.0 * self.dpi_scale;
-        let hit_radius = 18.0 * self.dpi_scale;
+        let scale = if self.pop_in.value() > 0.0 { self.pop_in.value() } else { 1.0 };
+        let (left, top, w, _) = self.scaled_card_bounds(cx, cy);
+        let btn_cx = left + w - 22.0 * self.dpi_scale * scale;
+        let btn_cy = top + 22.0 * self.dpi_scale * scale;
+        let hit_radius = 18.0 * self.dpi_scale * scale;
         let dx = (cx + rel_x) - btn_cx;
         let dy = (cy + rel_y) - btn_cy;
         (dx * dx + dy * dy) <= (hit_radius * hit_radius)
     }
 
     pub fn hit_test_ok(&self, rel_x: f32, rel_y: f32, cx: f32, cy: f32) -> bool {
+        let scale = if self.pop_in.value() > 0.0 { self.pop_in.value() } else { 1.0 };
         let px = cx + rel_x;
         let py = cy + rel_y;
-        let (_, top, _, _) = self.card_bounds(cx, cy);
-        let btn_w = 296.0 * self.dpi_scale;
-        let btn_h = 40.0 * self.dpi_scale;
+        let (_, top, _, _) = self.scaled_card_bounds(cx, cy);
+        let btn_w = 296.0 * self.dpi_scale * scale;
+        let btn_h = 40.0 * self.dpi_scale * scale;
         let btn_left = cx - btn_w / 2.0;
-        let btn_top = top + 104.0 * self.dpi_scale;
+        let btn_top = top + 104.0 * self.dpi_scale * scale;
 
         px >= btn_left && px <= (btn_left + btn_w) && py >= btn_top && py <= (btn_top + btn_h)
     }
 
     pub fn hit_test_card(&self, rel_x: f32, rel_y: f32, cx: f32, cy: f32) -> bool {
-        let (left, top, w, h) = self.card_bounds(cx, cy);
+        let (left, top, w, h) = self.scaled_card_bounds(cx, cy);
         let px = cx + rel_x;
         let py = cy + rel_y;
         px >= left && px <= (left + w) && py >= top && py <= (top + h)

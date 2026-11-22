@@ -1,3 +1,4 @@
+pub mod action_history;
 pub mod alert_card;
 pub mod bulk_rename_card;
 pub mod card_common;
@@ -13,11 +14,15 @@ pub mod qrcodegen;
 pub mod quick_qr_card;
 pub mod reduce_size_card;
 pub mod renderer;
+pub mod search_hud;
 pub mod smart_filter;
 pub mod spring;
 pub mod surface;
 pub mod theme;
 
+pub use action_history::{
+    get_global_history, record_action_usage, sort_actions_by_frequency, ActionHistoryTracker,
+};
 pub use alert_card::{render_alert_card, AlertCardState};
 pub use bulk_rename_card::{render_bulk_rename_card, BulkRenameCardState};
 pub use donut_geometry::{DonutLayout, HitResult};
@@ -33,6 +38,7 @@ pub use qr_card::{render_qr_card, QrCardState, QrShareStatus, QrShareTab};
 pub use quick_qr_card::{render_quick_qr_card, QuickQrCardState, QuickQrTab};
 pub use reduce_size_card::{render_reduce_size_card, ReduceSizeCardState, SizeUnit};
 pub use renderer::{render_donut, render_progress, DonutState};
+pub use search_hud::{expand_to_leaf_actions, render_search_hud, ClipboardPreview, SearchHudState};
 pub use smart_filter::filter_actions;
 pub use spring::Spring;
 pub use surface::BlitSurface;

@@ -84,12 +84,12 @@
         {/if}
       </Card>
 
-      <!-- DOCX Plugin Card -->
+      <!-- Document Intelligence Engine Card -->
       <Card class="space-y-3.5">
         <div>
-          <h3 class="text-sm font-semibold text-gray-100">DOCX Document Layout Engine</h3>
+          <h3 class="text-sm font-semibold text-gray-100">Office &amp; Document Intelligence Engine</h3>
           <p class="text-xs text-gray-400 mt-1 leading-normal">
-            Enables accurate PDF to Word DOCX extraction with preserved table grids and layout.
+            Enables high-fidelity PDF conversion to Word (DOCX), Excel (XLSX), preserved table structures, and offline OCR text recognition.
           </p>
         </div>
 

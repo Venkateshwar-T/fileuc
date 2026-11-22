@@ -315,7 +315,13 @@ pub fn render_donut(
     // Alpha = 1 is completely imperceptible to the human eye (< 0.4% opacity),
     // but prevents Windows OLE from passing drag events through the gaps (between
     // center circle and slices, and between slices) to Windows Explorer!
-    let shield_r = base_outer_r + pop_out + 4.0 * dpi_scale;
+    // Expands to cover outer sub-slices when a slice group is expanded.
+    let shield_r = if state.expanded_group.is_some() {
+        let (_, sub_outer_r) = layout.sub_radii(pop_out);
+        sub_outer_r + pop_out + 6.0 * dpi_scale
+    } else {
+        base_outer_r + pop_out + 4.0 * dpi_scale
+    };
     let mut shield_pb = PathBuilder::new();
     shield_pb.push_circle(cx, cy, shield_r);
     if let Some(shield_path) = shield_pb.finish() {

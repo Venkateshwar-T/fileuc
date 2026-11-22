@@ -84,8 +84,17 @@ fn decode_heic_wic(src: &Path) -> Result<DynamicImage, ConvertError> {
             .GetSize(&mut width, &mut height)
             .map_err(|e| ConvertError::ConverterError(format!("Failed to get image size: {}", e)))?;
 
-        let stride = width * 4;
-        let buffer_size = (stride * height) as usize;
+        let stride = width.checked_mul(4)
+            .ok_or_else(|| ConvertError::ConverterError("Image width causes stride overflow".into()))?;
+        let buffer_size = (stride as usize)
+            .checked_mul(height as usize)
+            .ok_or_else(|| ConvertError::ConverterError("Image dimensions cause buffer overflow".into()))?;
+
+        // Sanity limit: max 512MB for a single decompressed HEIC frame
+        if buffer_size > 512 * 1024 * 1024 {
+            return Err(ConvertError::ConverterError(format!("HEIC image exceeds maximum memory limit: {} bytes", buffer_size)));
+        }
+
         let mut buffer = vec![0u8; buffer_size];
 
         converter

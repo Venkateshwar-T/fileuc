@@ -1,8 +1,9 @@
 use fileuc_types::ConvertError;
 use pdfium_render::prelude::*;
 use std::path::{Path, PathBuf};
+use std::sync::RwLock;
 
-static GLOBAL_PDFIUM: std::sync::OnceLock<Option<Pdfium>> = std::sync::OnceLock::new();
+static PDFIUM_CACHE: RwLock<Option<&'static Pdfium>> = RwLock::new(None);
 
 fn try_create_pdfium() -> Result<Pdfium, ConvertError> {
     let mut candidate_paths: Vec<PathBuf> = Vec::new();
@@ -51,14 +52,24 @@ fn try_create_pdfium() -> Result<Pdfium, ConvertError> {
 }
 
 pub fn init_pdfium() -> Result<&'static Pdfium, ConvertError> {
-    let instance = GLOBAL_PDFIUM.get_or_init(|| try_create_pdfium().ok());
-    match instance {
-        Some(p) => Ok(p),
-        None => Err(ConvertError::EngineMissing(
-            "pdfium.dll could not be loaded. Please ensure pdfium.dll is present next to fileuc.exe."
-                .to_string(),
-        )),
+    if let Ok(guard) = PDFIUM_CACHE.read() {
+        if let Some(instance) = *guard {
+            return Ok(instance);
+        }
     }
+
+    let mut guard = PDFIUM_CACHE
+        .write()
+        .map_err(|_| ConvertError::ConverterError("Pdfium lock poisoned".to_string()))?;
+
+    if let Some(instance) = *guard {
+        return Ok(instance);
+    }
+
+    let pdfium = try_create_pdfium()?;
+    let leaked: &'static Pdfium = Box::leak(Box::new(pdfium));
+    *guard = Some(leaked);
+    Ok(leaked)
 }
 
 pub fn extract_text(src: &Path) -> Result<Vec<String>, ConvertError> {

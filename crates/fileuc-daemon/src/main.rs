@@ -6,7 +6,7 @@ use fileuc_daemon::ipc::{send_message, start_server, IpcMessage};
 use fileuc_daemon::single_instance::acquire;
 use fileuc_hook::gesture::{GestureDetector, GestureEvent, Modifiers};
 use fileuc_hook::mouse_hook::{
-    install, set_key_capture, set_mouse_capture_rect, set_qr_shortcut, HookEvent,
+    install, set_key_capture, set_mouse_capture_rect, set_qr_shortcut, set_search_shortcut, HookEvent,
 };
 use fileuc_hook::shortcut::parse_shortcut;
 use fileuc_daemon::share_server::{start_share_server, ShareServerEvent, ShareServerHandle};
@@ -22,6 +22,7 @@ use fileuc_hud::qr_card::{render_qr_card, QrCardState, QrShareTab};
 use fileuc_hud::quick_qr_card::{render_quick_qr_card, QuickQrCardState, QuickQrTab};
 use fileuc_hud::reduce_size_card::{render_reduce_size_card, ReduceSizeCardState};
 use fileuc_hud::renderer::{render_donut, render_progress, DonutState};
+use fileuc_hud::search_hud::{expand_to_leaf_actions, render_search_hud, ClipboardPreview, SearchHudState};
 use fileuc_hud::smart_filter::filter_actions;
 use fileuc_hud::theme::Theme;
 use fileuc_settings::store::SettingsStore;
@@ -264,6 +265,9 @@ fn main() {
     let mut progress_tracker: Option<ProgressTracker> = None;
     let mut qr_card_state: Option<QrCardState> = None;
     let mut quick_qr_card_state: Option<QuickQrCardState> = None;
+    let mut search_hud_state: Option<SearchHudState> = None;
+    let mut search_clipboard_link_url: Option<String> = None;
+    let mut search_clipboard_override_save_dir: Option<PathBuf> = None;
     let mut password_card_state: Option<PasswordCardState> = None;
     let mut reduce_size_card_state: Option<ReduceSizeCardState> = None;
     let mut bulk_rename_card_state: Option<BulkRenameCardState> = None;
@@ -296,10 +300,11 @@ fn main() {
         });
     }
 
-    // Register initial quick QR shortcut from persistent settings
+    // Register initial quick QR and search HUD shortcuts from persistent settings
     {
         let st = current_settings.lock().unwrap_or_else(|e| e.into_inner());
         set_qr_shortcut(parse_shortcut(&st.qr_shortcut));
+        set_search_shortcut(parse_shortcut(&st.search_shortcut));
     }
 
     let fonts = FontContext::new();
@@ -328,6 +333,7 @@ fn main() {
     fileuc_daemon::trim_working_set();
 
     let mut was_active = false;
+    let mut last_frame_time = std::time::Instant::now();
 
     while !should_quit.load(Ordering::SeqCst) {
         let mut donut_dirty = false;
@@ -335,12 +341,14 @@ fn main() {
         let mut password_card_dirty = false;
         let mut qr_card_dirty = false;
         let mut quick_qr_card_dirty = false;
+        let mut search_hud_dirty = false;
         let mut reduce_size_card_dirty = false;
         let mut bulk_rename_card_dirty = false;
         let mut alert_card_dirty = false;
         let mut submit_password = false;
         let mut submit_reduce_size = false;
         let mut submit_bulk_rename = false;
+        let mut submit_search_action: Option<ConversionAction> = None;
 
         // Sync trigger modifier, theme, tray, quick QR shortcut and service state dynamically only when changed
         if settings_changed.swap(false, Ordering::Acquire) {
@@ -352,6 +360,7 @@ fn main() {
             };
             detector.set_required_modifier(new_mod);
             set_qr_shortcut(parse_shortcut(&st.qr_shortcut));
+            set_search_shortcut(parse_shortcut(&st.search_shortcut));
             cached_service_enabled = st.service_enabled;
             cached_theme_choice = st.theme;
             cached_theme = Theme::resolve(match cached_theme_choice {
@@ -373,9 +382,10 @@ fn main() {
         let service_enabled = cached_service_enabled;
 
         // If service was paused while a gesture or HUD was open, cancel it immediately
-        if !service_enabled && (donut_state.is_some() || quick_qr_card_state.is_some()) {
+        if !service_enabled && (donut_state.is_some() || quick_qr_card_state.is_some() || search_hud_state.is_some()) {
             donut_state = None;
             dismiss_quick_qr_card(&mut quick_qr_card_state, &mut hud);
+            dismiss_search_hud(&mut search_hud_state, &mut hud, &mut current_files, &mut current_actions);
             hud.hide();
             current_files.clear();
             current_actions.clear();
@@ -452,7 +462,27 @@ fn main() {
         for event in hook_events {
             let gesture = match event {
                 HookEvent::MouseDown { btn, x, y, mods } => {
-                    if let Some(ref mut card) = quick_qr_card_state {
+                    if let Some(ref mut state) = search_hud_state {
+                        let rel_x = (x - hud_center.0) as f32;
+                        let rel_y = (y - hud_center.1) as f32;
+                        if let Some(chip_idx) = state.hit_test_chip(rel_x, rel_y) {
+                            if chip_idx < state.matched_actions.len() {
+                                let action = state.matched_actions[chip_idx];
+                                if state.supported_actions.contains(&action) {
+                                    submit_search_action = Some(action);
+                                }
+                            }
+                        } else if !state.hit_test_search_bar(rel_x, rel_y) {
+                            dismiss_search_hud(
+                                &mut search_hud_state,
+                                &mut hud,
+                                &mut current_files,
+                                &mut current_actions,
+                            );
+                            search_clipboard_link_url = None;
+                            search_clipboard_override_save_dir = None;
+                        }
+                    } else if let Some(ref mut card) = quick_qr_card_state {
                         let rel_x = (x - hud_center.0) as f32;
                         let rel_y = (y - hud_center.1) as f32;
                         let cx = hud.size() as f32 / 2.0;
@@ -695,7 +725,15 @@ fn main() {
                         let cy_f = hud.size() as f32 / 2.0;
                         let win_x = hud.screen_x();
                         let win_y = hud.screen_y();
-                        if let Some(ref card) = quick_qr_card_state {
+                        if let Some(ref state) = search_hud_state {
+                            let (l, t, w, h) = state.overall_bounds(cx_f, cy_f);
+                            set_mouse_capture_rect(Some((
+                                win_x + l as i32,
+                                win_y + t as i32,
+                                win_x + (l + w) as i32,
+                                win_y + (t + h) as i32,
+                            )));
+                        } else if let Some(ref card) = quick_qr_card_state {
                             let (l, t, w, h) = card.card_bounds(cx_f, cy_f);
                             set_mouse_capture_rect(Some((
                                 win_x + l as i32,
@@ -752,7 +790,16 @@ fn main() {
                     let cy = hud.size() as f32 / 2.0;
                     let mut is_hand = false;
 
-                    if let Some(ref mut card) = quick_qr_card_state {
+                    if let Some(ref mut state) = search_hud_state {
+                        let chip_hov = state.hit_test_chip(rel_x, rel_y);
+                        if state.hovered_chip_idx != chip_hov {
+                            state.hovered_chip_idx = chip_hov;
+                            search_hud_dirty = true;
+                        }
+                        if chip_hov.is_some() {
+                            is_hand = true;
+                        }
+                    } else if let Some(ref mut card) = quick_qr_card_state {
                         let close_hov = card.hit_test_close(rel_x, rel_y, cx, cy);
                         let tab_hov = card.hit_test_tab(rel_x, rel_y, cx, cy);
                         let save_hov = card.hit_test_save(rel_x, rel_y, cx, cy);
@@ -878,7 +925,7 @@ fn main() {
                         popup_drag = None;
                     }
                     let g = detector.mouse_up(btn, x, y, mods);
-                    if donut_state.is_none() && progress_tracker.is_none() && alert_card_state.is_none() && password_card_state.is_none() && reduce_size_card_state.is_none() && bulk_rename_card_state.is_none() && qr_card_state.is_none() && quick_qr_card_state.is_none() {
+                    if donut_state.is_none() && progress_tracker.is_none() && alert_card_state.is_none() && password_card_state.is_none() && reduce_size_card_state.is_none() && bulk_rename_card_state.is_none() && qr_card_state.is_none() && quick_qr_card_state.is_none() && search_hud_state.is_none() {
                         if let Some(sel) = fileuc_daemon::explorer::get_foreground_selected_files() {
                             order_tracker.update_selection(&sel);
                         }
@@ -888,7 +935,41 @@ fn main() {
                 HookEvent::KeyDown { mods } => detector.key_down(mods),
                 HookEvent::KeyUp { mods } => detector.key_up(mods),
                 HookEvent::KeyAction { vk, ch, mods } => {
-                    if let Some(ref mut card) = quick_qr_card_state {
+                    if let Some(ref mut state) = search_hud_state {
+                        search_hud_dirty = true;
+                        if vk == 0x1B { // VK_ESCAPE
+                            dismiss_search_hud(
+                                &mut search_hud_state,
+                                &mut hud,
+                                &mut current_files,
+                                &mut current_actions,
+                            );
+                            search_clipboard_link_url = None;
+                            search_clipboard_override_save_dir = None;
+                        } else if vk == 0x08 { // VK_BACK
+                            state.pop_char(&fonts);
+                        } else if vk == 0x56 && mods.contains(Modifiers::CTRL) { // Ctrl + V
+                            if let Some(clip_text) = get_clipboard_text() {
+                                state.paste_text(&clip_text, &fonts);
+                            }
+                        } else if (vk == 0x41 && mods.contains(Modifiers::CTRL)) || vk == 0x2E { // Ctrl + A or Delete
+                            state.clear(&fonts);
+                        } else if vk == 0x25 || vk == 0x26 { // Left or Up arrow
+                            state.select_prev_chip();
+                        } else if vk == 0x27 || vk == 0x28 { // Right or Down arrow
+                            state.select_next_chip();
+                        } else if vk == 0x0D { // VK_RETURN
+                            if let Some(action) = state.best_match_action() {
+                                if state.supported_actions.contains(&action) {
+                                    submit_search_action = Some(action);
+                                }
+                            }
+                        } else if let Some(c) = ch {
+                            if !mods.contains(Modifiers::CTRL) && !mods.contains(Modifiers::ALT) {
+                                state.push_char(c, &fonts);
+                            }
+                        }
+                    } else if let Some(ref mut card) = quick_qr_card_state {
                         quick_qr_card_dirty = true;
                         if vk == 0x1B { // VK_ESCAPE
                             dismiss_quick_qr_card(&mut quick_qr_card_state, &mut hud);
@@ -931,6 +1012,8 @@ fn main() {
                         password_card_dirty = true;
                         if vk == 0x08 { // VK_BACK
                             card.pop_char();
+                        } else if vk == 0x09 { // VK_TAB (Toggle show/hide password)
+                            card.toggle_show_password();
                         } else if vk == 0x0D { // VK_RETURN
                             submit_password = true;
                         } else if vk == 0x1B { // VK_ESCAPE
@@ -1001,6 +1084,14 @@ fn main() {
                             current_files.clear();
                             current_actions.clear();
                         }
+                        if search_hud_state.is_some() {
+                            dismiss_search_hud(
+                                &mut search_hud_state,
+                                &mut hud,
+                                &mut current_files,
+                                &mut current_actions,
+                            );
+                        }
                         if password_card_state.is_some() {
                             dismiss_password_card(
                                 &mut password_card_state,
@@ -1057,6 +1148,14 @@ fn main() {
                                 }
                             });
                         }
+                        if let Some(clip_text) = fileuc_daemon::clipboard::get_clipboard_text() {
+                            let trimmed = clip_text.trim();
+                            if !trimmed.is_empty() && fileuc_daemon::clipboard::is_url_string(trimmed) {
+                                card.input_text = trimmed.to_string();
+                                card.tab = QuickQrTab::Link;
+                                card.update_qr();
+                            }
+                        }
                         let (l, t, w, h) = card.card_bounds(hud_center.0 as f32, hud_center.1 as f32);
                         set_mouse_capture_rect(Some((l as i32, t as i32, (l + w) as i32, (t + h) as i32)));
                         set_key_capture(true);
@@ -1065,6 +1164,217 @@ fn main() {
                         hud.show();
                         quick_qr_card_state = Some(card);
                         quick_qr_card_dirty = false;
+                    }
+                    None
+                }
+                HookEvent::SearchShortcutTriggered => {
+                    if cached_service_enabled {
+                        if search_hud_state.is_some() {
+                            dismiss_search_hud(
+                                &mut search_hud_state,
+                                &mut hud,
+                                &mut current_files,
+                                &mut current_actions,
+                            );
+                            continue;
+                        }
+
+                        if donut_state.is_some() {
+                            donut_state = None;
+                            hud.hide();
+                            current_files.clear();
+                            current_actions.clear();
+                        }
+                        if quick_qr_card_state.is_some() {
+                            dismiss_quick_qr_card(&mut quick_qr_card_state, &mut hud);
+                        }
+                        if password_card_state.is_some() {
+                            dismiss_password_card(
+                                &mut password_card_state,
+                                &mut hud,
+                                &mut current_files,
+                                &mut current_actions,
+                            );
+                        }
+                        if reduce_size_card_state.is_some() {
+                            dismiss_reduce_size_card(
+                                &mut reduce_size_card_state,
+                                &mut hud,
+                                &mut current_files,
+                                &mut current_actions,
+                            );
+                        }
+                        if bulk_rename_card_state.is_some() {
+                            dismiss_bulk_rename_card(
+                                &mut bulk_rename_card_state,
+                                &mut hud,
+                                &mut current_files,
+                                &mut current_actions,
+                            );
+                        }
+                        if qr_card_state.is_some() {
+                            dismiss_qr_card(
+                                &mut qr_card_state,
+                                &mut share_server,
+                                &mut pinggy_tunnel,
+                                &mut cloudflare_tunnel,
+                                &mut hud,
+                                &mut current_files,
+                                &mut current_actions,
+                            );
+                        }
+
+                        let detected = fileuc_daemon::explorer::get_selected_files();
+                        let mut valid_files: Vec<PathBuf> = detected
+                            .into_iter()
+                            .filter(|p| fileuc_daemon::explorer::is_supported_user_file(p))
+                            .collect();
+
+                        let mut clipboard_title: Option<String> = None;
+                        let mut clipboard_subtitle: Option<String> = None;
+                        let mut clipboard_preview: Option<ClipboardPreview> = None;
+                        let mut is_clipboard_link = false;
+                        let mut clip_link_url: Option<String> = None;
+                        let mut clip_save_dir: Option<PathBuf> = None;
+
+                        if valid_files.is_empty() {
+                            // Quick Clipboard Action fallback
+                            if let Some(payload) = fileuc_daemon::clipboard::get_clipboard_payload() {
+                                let title = match payload.kind {
+                                    fileuc_daemon::clipboard::ClipboardKind::Image => "Image from Clipboard",
+                                    fileuc_daemon::clipboard::ClipboardKind::Link => "Link from Clipboard",
+                                    fileuc_daemon::clipboard::ClipboardKind::Text => "Text from Clipboard",
+                                    fileuc_daemon::clipboard::ClipboardKind::Files => "Files from Clipboard",
+                                };
+                                clipboard_title = Some(title.to_string());
+                                clipboard_subtitle = Some(format!("Saves to: {}", payload.save_location.display()));
+
+                                match payload.kind {
+                                    fileuc_daemon::clipboard::ClipboardKind::Image => {
+                                        if let Some(first_path) = payload.paths.first() {
+                                            clipboard_preview = Some(ClipboardPreview::Image(first_path.clone()));
+                                        }
+                                    }
+                                    fileuc_daemon::clipboard::ClipboardKind::Link => {
+                                        if let Some(ref text) = payload.raw_text {
+                                            clipboard_preview = Some(ClipboardPreview::Link(text.clone()));
+                                        }
+                                    }
+                                    fileuc_daemon::clipboard::ClipboardKind::Text => {
+                                        if let Some(ref text) = payload.raw_text {
+                                            clipboard_preview = Some(ClipboardPreview::Text(text.clone()));
+                                        }
+                                    }
+                                    fileuc_daemon::clipboard::ClipboardKind::Files => {
+                                        let count = payload.paths.len();
+                                        let first_name = payload.paths.first()
+                                            .and_then(|p| p.file_name())
+                                            .map(|n| n.to_string_lossy().to_string())
+                                            .unwrap_or_else(|| "files".to_string());
+                                        clipboard_preview = Some(ClipboardPreview::Files(count, first_name));
+                                    }
+                                }
+
+                                valid_files = payload.paths;
+                                if !payload.is_from_disk {
+                                    clip_save_dir = Some(payload.save_location.clone());
+                                }
+                                if payload.kind == fileuc_daemon::clipboard::ClipboardKind::Link {
+                                    is_clipboard_link = true;
+                                    clip_link_url = payload.raw_text;
+                                }
+                            }
+                        }
+
+                        if valid_files.is_empty() {
+                            // Silently ignore if no file/folder is selected and clipboard has no usable payload
+                            continue;
+                        }
+
+                        let sample_ext = valid_files
+                            .first()
+                            .and_then(|f| f.extension())
+                            .and_then(|e| e.to_str())
+                            .unwrap_or("");
+
+                        let has_ffmpeg = fileuc_convert::media::find_ffmpeg().is_some();
+                        let raw_actions = if is_clipboard_link {
+                            vec![
+                                ConversionAction::MdToTxt,
+                                ConversionAction::TxtToMd,
+                                ConversionAction::TxtToPdf,
+                                ConversionAction::ToHtml,
+                                ConversionAction::Share,
+                            ]
+                        } else if clipboard_title.as_deref() == Some("Text from Clipboard") {
+                            vec![
+                                ConversionAction::MdToTxt,
+                                ConversionAction::TxtToMd,
+                                ConversionAction::TxtToPdf,
+                                ConversionAction::ToHtml,
+                            ]
+                        } else {
+                            filter_actions(&valid_files, has_ffmpeg)
+                        };
+                        let mut actions = expand_to_leaf_actions(&raw_actions);
+                        let missing = get_missing_plugins();
+                        actions.retain(|a| !missing.contains(a));
+
+                        if actions.is_empty() {
+                            continue;
+                        }
+
+                        order_tracker.update_selection(&valid_files);
+                        current_files = order_tracker.order_files(&valid_files);
+                        current_actions = actions.clone();
+
+                        let mut pt = windows::Win32::Foundation::POINT::default();
+                        unsafe {
+                            let _ = windows::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut pt);
+                        }
+
+                        let flip_above = unsafe {
+                            use windows::Win32::Graphics::Gdi::{
+                                GetMonitorInfoW, MonitorFromPoint, MONITORINFO,
+                                MONITOR_DEFAULTTONEAREST,
+                            };
+                            let hmon = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
+                            let mut minfo = MONITORINFO {
+                                cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+                                ..Default::default()
+                            };
+                            if GetMonitorInfoW(hmon, &mut minfo).as_bool() {
+                                let dpi = hud.dpi_scale();
+                                pt.y + (120.0 * dpi) as i32 > minfo.rcWork.bottom
+                            } else {
+                                false
+                            }
+                        };
+
+                        hud_center = hud.position_at_center(pt.x, pt.y);
+                        if hud.size() != pixmap.width() {
+                            pixmap = tiny_skia::Pixmap::new(hud.size(), hud.size()).unwrap();
+                        }
+
+                        let mut state = SearchHudState::new_with_ext(&actions, sample_ext, hud.dpi_scale(), flip_above, &fonts);
+                        state.clipboard_title = clipboard_title;
+                        state.clipboard_subtitle = clipboard_subtitle;
+                        state.is_clipboard_link = is_clipboard_link;
+                        if let Some(preview) = clipboard_preview {
+                            state.set_clipboard_preview(preview, &fonts);
+                        } else {
+                            state.update_layout(&fonts);
+                        }
+                        search_clipboard_link_url = clip_link_url;
+                        search_clipboard_override_save_dir = clip_save_dir;
+                        let (l, t, w, h) = state.overall_bounds(hud_center.0 as f32, hud_center.1 as f32);
+                        set_mouse_capture_rect(Some((l as i32, t as i32, (l + w) as i32, (t + h) as i32)));
+                        set_key_capture(true);
+                        render_search_hud(&state, &cached_theme, &fonts, &mut pixmap);
+                        hud.repaint(&pixmap);
+                        hud.show();
+                        search_hud_state = Some(state);
+                        search_hud_dirty = false;
                     }
                     None
                 }
@@ -1079,6 +1389,7 @@ fn main() {
                             || password_card_state.is_some()
                             || qr_card_state.is_some()
                             || quick_qr_card_state.is_some()
+                            || search_hud_state.is_some()
                             || bulk_rename_card_state.is_some()
                             || reduce_size_card_state.is_some()
                             || popup_drag.is_some()
@@ -1143,6 +1454,7 @@ fn main() {
                             && qr_card_state.is_none()
                             && password_card_state.is_none()
                             && quick_qr_card_state.is_none()
+                            && search_hud_state.is_none()
                             && bulk_rename_card_state.is_none()
                             && reduce_size_card_state.is_none()
                         {
@@ -1185,6 +1497,7 @@ fn main() {
                         || password_card_state.is_some()
                         || qr_card_state.is_some()
                         || quick_qr_card_state.is_some()
+                        || search_hud_state.is_some()
                         || bulk_rename_card_state.is_some()
                         || reduce_size_card_state.is_some()
                     {
@@ -1235,6 +1548,7 @@ fn main() {
                         || password_card_state.is_some()
                         || qr_card_state.is_some()
                         || quick_qr_card_state.is_some()
+                        || search_hud_state.is_some()
                         || bulk_rename_card_state.is_some()
                         || reduce_size_card_state.is_some()
                     {
@@ -1255,6 +1569,7 @@ fn main() {
                         || password_card_state.is_some()
                         || qr_card_state.is_some()
                         || quick_qr_card_state.is_some()
+                        || search_hud_state.is_some()
                         || bulk_rename_card_state.is_some()
                         || reduce_size_card_state.is_some()
                     {
@@ -1275,6 +1590,7 @@ fn main() {
                         || password_card_state.is_some()
                         || qr_card_state.is_some()
                         || quick_qr_card_state.is_some()
+                        || search_hud_state.is_some()
                         || bulk_rename_card_state.is_some()
                         || reduce_size_card_state.is_some()
                     {
@@ -1329,6 +1645,7 @@ fn main() {
                                             &mut current_actions,
                                             &order_tracker,
                                             &current_settings,
+                                            None,
                                             &settings_controller,
                                             &mut hud,
                                             hud_center,
@@ -1360,6 +1677,7 @@ fn main() {
                                 &mut current_actions,
                                 &order_tracker,
                                 &current_settings,
+                                None,
                                 &settings_controller,
                                 &mut hud,
                                 hud_center,
@@ -1429,6 +1747,7 @@ fn main() {
                                     &mut current_actions,
                                     &order_tracker,
                                     &current_settings,
+                                    None,
                                     &settings_controller,
                                     &mut hud,
                                     hud_center,
@@ -1584,6 +1903,71 @@ fn main() {
                     bulk_rename_card_dirty = true;
                 }
             }
+        }
+
+        // 3.10. Process Search HUD Action Submission
+        if let Some(action) = submit_search_action.take() {
+            set_key_capture(false);
+            set_mouse_capture_rect(None);
+            let is_clip_link = search_hud_state.as_ref().map(|s| s.is_clipboard_link).unwrap_or(false);
+            let clip_link_url = search_clipboard_link_url.take();
+            let clip_save_dir = search_clipboard_override_save_dir.take();
+            search_hud_state = None;
+
+            if is_clip_link && action == ConversionAction::Share {
+                // Open QuickQrCard with the link pre-entered
+                let mut card = QuickQrCardState::new(hud.dpi_scale());
+                card.tab = QuickQrTab::Link;
+                if let Some(link) = clip_link_url {
+                    card.input_text = link;
+                    card.update_qr();
+                }
+                let (l, t, w, h) = card.card_bounds(hud_center.0 as f32, hud_center.1 as f32);
+                set_mouse_capture_rect(Some((l as i32, t as i32, (l + w) as i32, (t + h) as i32)));
+                set_key_capture(true);
+                render_quick_qr_card(&card, &cached_theme, &fonts, &mut pixmap);
+                hud.repaint(&pixmap);
+                hud.show();
+                quick_qr_card_state = Some(card);
+                current_files.clear();
+                current_actions.clear();
+                continue;
+            }
+
+            let override_settings = if let Some(save_dir) = clip_save_dir {
+                let mut custom_st = current_settings.lock().unwrap().clone();
+                custom_st.output_mode = fileuc_settings::store::OutputMode::CustomFolder(save_dir);
+                Some(Arc::new(custom_st))
+            } else {
+                None
+            };
+
+            dispatch_action(
+                action,
+                &mut current_files,
+                &mut current_actions,
+                &order_tracker,
+                &current_settings,
+                override_settings,
+                &settings_controller,
+                &mut hud,
+                hud_center,
+                &mut alert_card_state,
+                &mut alert_card_dirty,
+                &mut password_card_state,
+                &mut password_card_dirty,
+                &mut reduce_size_card_state,
+                &mut reduce_size_card_dirty,
+                &mut bulk_rename_card_state,
+                &mut bulk_rename_card_dirty,
+                &mut qr_card_state,
+                &mut share_server,
+                &mut progress_tracker,
+                &mut conversion_in_flight,
+                &shared_conversion_state,
+                &mut active_conversion_summary,
+                &mut active_conversion_action,
+            );
         }
 
         // 4. Update in-flight conversion progress
@@ -1771,7 +2155,19 @@ fn main() {
         // 5. Render HUD Frame
         let theme = &cached_theme;
 
-        if let Some(ref mut card) = quick_qr_card_state {
+        let now = std::time::Instant::now();
+        let dt = now.duration_since(last_frame_time).as_secs_f32().clamp(0.001, 0.1);
+        last_frame_time = now;
+        let mut any_animating = false;
+
+        if let Some(ref mut state) = search_hud_state {
+            let animating = state.tick(dt);
+            any_animating |= animating;
+            if animating || search_hud_dirty {
+                render_search_hud(state, theme, &fonts, &mut pixmap);
+                hud.repaint(&pixmap);
+            }
+        } else if let Some(ref mut card) = quick_qr_card_state {
             if card.detected_ssid.is_none() {
                 if let Some(ref ssid) = *detected_wifi_ssid.lock().unwrap_or_else(|e| e.into_inner()) {
                     card.detected_ssid = Some(ssid.clone());
@@ -1779,31 +2175,36 @@ fn main() {
                     quick_qr_card_dirty = true;
                 }
             }
-            let animating = card.tick(1.0 / 60.0);
+            let animating = card.tick(dt);
+            any_animating |= animating;
             if animating || quick_qr_card_dirty {
                 render_quick_qr_card(card, theme, &fonts, &mut pixmap);
                 hud.repaint(&pixmap);
             }
         } else if let Some(ref mut card) = password_card_state {
-            let animating = card.tick(1.0 / 60.0);
+            let animating = card.tick(dt);
+            any_animating |= animating;
             if animating || password_card_dirty {
                 render_password_card(card, theme, &fonts, &mut pixmap);
                 hud.repaint(&pixmap);
             }
         } else if let Some(ref mut card) = reduce_size_card_state {
-            let animating = card.tick(1.0 / 60.0);
+            let animating = card.tick(dt);
+            any_animating |= animating;
             if animating || reduce_size_card_dirty {
                 render_reduce_size_card(card, theme, &fonts, &mut pixmap);
                 hud.repaint(&pixmap);
             }
         } else if let Some(ref mut card) = bulk_rename_card_state {
-            let animating = card.tick(1.0 / 60.0);
+            let animating = card.tick(dt);
+            any_animating |= animating;
             if animating || bulk_rename_card_dirty {
                 render_bulk_rename_card(card, theme, &fonts, &mut pixmap);
                 hud.repaint(&pixmap);
             }
         } else if let Some(ref mut card) = qr_card_state {
-            let animating = card.tick(1.0 / 60.0);
+            let animating = card.tick(dt);
+            any_animating |= animating;
             if animating || qr_card_dirty {
                 render_qr_card(card, theme, &fonts, &mut pixmap);
                 hud.repaint(&pixmap);
@@ -1820,13 +2221,15 @@ fn main() {
                 );
             }
         } else if let Some(ref mut card) = alert_card_state {
-            let animating = card.tick(1.0 / 60.0);
+            let animating = card.tick(dt);
+            any_animating |= animating;
             if animating || alert_card_dirty {
                 render_alert_card(card, theme, &fonts, &mut pixmap);
                 hud.repaint(&pixmap);
             }
         } else if let Some(ref mut tracker) = progress_tracker {
-            let animating = tracker.tick(1.0 / 60.0);
+            let animating = tracker.tick(dt);
+            any_animating |= animating;
             if animating || progress_dirty {
                 render_progress(tracker, theme, &fonts, hud.dpi_scale(), &mut pixmap);
                 hud.repaint(&pixmap);
@@ -1840,7 +2243,8 @@ fn main() {
                 current_actions.clear();
             }
         } else if let Some(ref mut state) = donut_state {
-            let animating = state.tick(1.0 / 60.0);
+            let animating = state.tick(dt);
+            any_animating |= animating;
             if animating || donut_dirty {
                 render_donut(state, theme, &fonts, &mut pixmap);
                 hud.repaint(&pixmap);
@@ -1855,6 +2259,7 @@ fn main() {
             || bulk_rename_card_state.is_some()
             || qr_card_state.is_some()
             || quick_qr_card_state.is_some()
+            || search_hud_state.is_some()
             || pending_drag_ended.is_some()
             || conversion_in_flight.is_some()
             || cloudflared_dl_rx.as_ref().map_or(false, |_| qr_card_state.as_ref().map_or(false, |c| c.is_downloading));
@@ -1864,11 +2269,26 @@ fn main() {
         }
         was_active = is_active;
 
+        let has_active_animation = any_animating
+            || donut_dirty
+            || search_hud_dirty
+            || quick_qr_card_dirty
+            || password_card_dirty
+            || reduce_size_card_dirty
+            || bulk_rename_card_dirty
+            || qr_card_dirty
+            || alert_card_dirty
+            || progress_dirty;
+
         unsafe {
             use windows::Win32::UI::WindowsAndMessaging::{
                 MsgWaitForMultipleObjectsEx, MWMO_INPUTAVAILABLE, QS_ALLINPUT,
             };
-            let timeout = if is_active { 16 } else { 250 };
+            let timeout = if is_active {
+                if has_active_animation { 16 } else { 100 }
+            } else {
+                250
+            };
             let _ = MsgWaitForMultipleObjectsEx(None, timeout, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
         }
     }
@@ -1941,6 +2361,7 @@ fn dispatch_action(
     current_actions: &mut Vec<ConversionAction>,
     order_tracker: &fileuc_daemon::order_tracker::SelectionOrderTracker,
     current_settings: &Arc<Mutex<fileuc_settings::store::AppSettings>>,
+    override_settings: Option<Arc<fileuc_settings::store::AppSettings>>,
     settings_controller: &fileuc_settings::SettingsController,
     hud: &mut HudWindow,
     hud_center: (i32, i32),
@@ -1977,7 +2398,7 @@ fn dispatch_action(
         return;
     }
     let files = order_tracker.order_files(current_files);
-    let settings = Arc::new(current_settings.lock().unwrap().clone());
+    let settings = override_settings.unwrap_or_else(|| Arc::new(current_settings.lock().unwrap().clone()));
     execute_conversion_action(
         action,
         files,
@@ -2024,6 +2445,15 @@ fn execute_conversion_action(
     active_conversion_summary: &mut String,
     active_conversion_action: &mut String,
 ) {
+    let sample_ext = files
+        .first()
+        .and_then(|f| f.extension())
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
+    if !sample_ext.is_empty() {
+        fileuc_hud::record_action_usage(sample_ext, action);
+    }
+
     if action == ConversionAction::ReduceSize {
         let total_size_bytes: u64 = files.iter()
             .filter_map(|p| std::fs::metadata(p).ok().map(|m| m.len()))
@@ -2266,4 +2696,19 @@ fn dismiss_quick_qr_card(
     set_mouse_capture_rect(None);
     *quick_qr_card_state = None;
     hud.hide();
+}
+
+fn dismiss_search_hud(
+    search_hud_state: &mut Option<SearchHudState>,
+    hud: &mut HudWindow,
+    files: &mut Vec<PathBuf>,
+    actions: &mut Vec<ConversionAction>,
+) {
+    set_key_capture(false);
+    set_mouse_capture_rect(None);
+    *search_hud_state = None;
+    hud.hide();
+    files.clear();
+    actions.clear();
+    fileuc_daemon::clipboard::cleanup_clipboard_temp_files();
 }
