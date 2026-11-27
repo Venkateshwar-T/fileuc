@@ -13,7 +13,7 @@
   <img src="https://img.shields.io/badge/Rust-1.80%2B-orange?style=flat-square&logo=rust" alt="Rust" />
   <img src="https://img.shields.io/badge/Frontend-Tauri%20v2%20%2B%20Svelte%205-FF3E00?style=flat-square&logo=svelte" alt="Svelte 5" />
   <img src="https://img.shields.io/badge/Renderer-Tiny--Skia%20(60FPS)-4A90E2?style=flat-square" alt="Renderer" />
-  <img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="License" />
+  <img src="https://img.shields.io/badge/License-AGPLv3-blue?style=flat-square" alt="License" />
 </p>
 
 ---
@@ -152,4 +152,4 @@ cargo test -p fileuc-hud -p fileuc-hook -p fileuc-types
 
 ## ✦ License
 
-This project is licensed under the [MIT License](LICENSE).
+This project is licensed under the [GNU Affero General Public License v3.0 (AGPLv3)](LICENSE).

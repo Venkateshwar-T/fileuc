@@ -7,8 +7,13 @@
     <title>FileUC</title>
     <script>
       try {
-        const isDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+        const cached = localStorage.getItem('fileuc_theme_dark');
+        const isDark =
+          cached !== null
+            ? cached === '1'
+            : Boolean(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
         if (isDark) {
+          document.documentElement.classList.remove('light');
           document.documentElement.classList.add('dark');
         } else {
           document.documentElement.classList.remove('dark');

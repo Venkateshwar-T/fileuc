@@ -32,5 +32,6 @@ Thumbs.db
 .vscode/
 .idea/
 
-# Local Automation Scripts
+# Local Automation Scripts & Prompts
 bump-version.ps1
+GIT_AUTO_UPDATE.md

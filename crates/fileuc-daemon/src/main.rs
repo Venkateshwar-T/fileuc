@@ -309,7 +309,6 @@ fn main() {
 
     let fonts = FontContext::new();
     let mut pixmap = tiny_skia::Pixmap::new(hud.size(), hud.size()).unwrap();
-    let mut cursor_is_hand = false;
 
     // Warm up DWM layered window context, tiny-skia path rendering, and font glyph rasterizer
     hud.warmup_surface();
@@ -903,20 +902,7 @@ fn main() {
                         }
                     }
 
-                    unsafe {
-                        use windows::Win32::UI::WindowsAndMessaging::{LoadCursorW, SetCursor, IDC_ARROW, IDC_HAND};
-                        if is_hand {
-                            if let Ok(cur) = LoadCursorW(None, IDC_HAND) {
-                                SetCursor(cur);
-                                cursor_is_hand = true;
-                            }
-                        } else if cursor_is_hand {
-                            if let Ok(cur) = LoadCursorW(None, IDC_ARROW) {
-                                SetCursor(cur);
-                                cursor_is_hand = false;
-                            }
-                        }
-                    }
+                    hud.set_cursor_hand(is_hand);
 
                     g
                 }

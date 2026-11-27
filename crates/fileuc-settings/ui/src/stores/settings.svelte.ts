@@ -48,14 +48,16 @@ export interface PluginState {
 
 export function createSettingsStore() {
   let activeTab = $state<Tab>('home');
-  let isDarkMode = $state<boolean>(true);
+  let isDarkMode = $state<boolean>(
+    typeof document !== 'undefined' ? document.documentElement.classList.contains('dark') : false,
+  );
   let listenersInitialized = false;
 
   let settings = $state<AppSettings>({
     trigger_modifier: 'Ctrl',
     qr_shortcut: 'Ctrl+Shift+Q',
     search_shortcut: 'Ctrl+Space',
-    theme: 'Dark',
+    theme: 'System',
     accent_color: '#7066E0',
     ffmpeg_path: null,
     auto_start: true,
@@ -121,6 +123,11 @@ export function createSettingsStore() {
         document.documentElement.classList.add('light');
       }
     }
+
+    // Persist resolved theme for synchronous frame-0 initialization on next launch
+    try {
+      localStorage.setItem('fileuc_theme_dark', isDarkMode ? '1' : '0');
+    } catch {}
 
     // Force layout reflow so theme color variables update synchronously
     void document.documentElement.offsetHeight;

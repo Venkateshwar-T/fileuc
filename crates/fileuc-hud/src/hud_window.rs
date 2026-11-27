@@ -1,5 +1,6 @@
 use crate::drop_target::{DropTargetEvent, FileDropTarget};
 use crate::surface::BlitSurface;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::Mutex;
 use windows::core::{w, PCWSTR};
@@ -11,10 +12,10 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Ole::{OleInitialize, OleUninitialize, RegisterDragDrop, RevokeDragDrop};
 use windows::Win32::UI::HiDpi::{GetDpiForSystem, GetDpiForWindow};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, RegisterClassW, SetWindowPos, ShowWindow,
-    CS_HREDRAW, CS_VREDRAW, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
-    SW_HIDE, SW_SHOWNOACTIVATE, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-    WS_EX_TOPMOST, WS_POPUP,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, LoadCursorW, RegisterClassW, SetCursor,
+    SetWindowPos, ShowWindow, CS_HREDRAW, CS_VREDRAW, HWND_TOPMOST, IDC_ARROW, IDC_HAND,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_SHOWNOACTIVATE, WNDCLASSW,
+    WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
 const WINDOW_CLASS_NAME: PCWSTR = w!("FileUC_HudWindow");
@@ -22,6 +23,14 @@ const WINDOW_CLASS_NAME: PCWSTR = w!("FileUC_HudWindow");
 pub const BASE_SIDE_DIP: f32 = 480.0; // Ample canvas space for 150px outer radius donut, sub-slices fan, 380px modal cards, and outer slice badges
 
 static HUD_EVENT_TX: Mutex<Option<Sender<DropTargetEvent>>> = Mutex::new(None);
+static HUD_CURSOR_HAND: AtomicBool = AtomicBool::new(false);
+
+unsafe fn apply_hud_cursor(is_hand: bool) {
+    let cursor_id = if is_hand { IDC_HAND } else { IDC_ARROW };
+    if let Ok(cur) = LoadCursorW(None, cursor_id) {
+        SetCursor(cur);
+    }
+}
 
 unsafe extern "system" fn hud_wnd_proc(
     hwnd: HWND,
@@ -29,6 +38,12 @@ unsafe extern "system" fn hud_wnd_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
+    const WM_SETCURSOR: u32 = 0x0020;
+    const HTCLIENT: u32 = 1;
+    if msg == WM_SETCURSOR && ((lparam.0 as u32) & 0xFFFF) == HTCLIENT {
+        apply_hud_cursor(HUD_CURSOR_HAND.load(Ordering::Relaxed));
+        return LRESULT(1);
+    }
     DefWindowProcW(hwnd, msg, wparam, lparam)
 }
 
@@ -49,10 +64,12 @@ impl HudWindow {
             let _ = OleInitialize(None);
             let hinstance: HINSTANCE = GetModuleHandleW(None)?.into();
 
+            let h_cursor = LoadCursorW(None, IDC_ARROW).unwrap_or_default();
             let wnd_class = WNDCLASSW {
                 style: CS_HREDRAW | CS_VREDRAW,
                 lpfnWndProc: Some(hud_wnd_proc),
                 hInstance: hinstance,
+                hCursor: h_cursor,
                 lpszClassName: WINDOW_CLASS_NAME,
                 ..Default::default()
             };
@@ -193,7 +210,17 @@ impl HudWindow {
         (self.center_x, self.center_y)
     }
 
+    pub fn set_cursor_hand(&self, is_hand: bool) {
+        let prev = HUD_CURSOR_HAND.swap(is_hand, Ordering::Relaxed);
+        if prev != is_hand {
+            unsafe {
+                apply_hud_cursor(is_hand);
+            }
+        }
+    }
+
     pub fn show(&self) {
+        HUD_CURSOR_HAND.store(false, Ordering::Relaxed);
         unsafe {
             let _ = SetWindowPos(
                 self.hwnd,
@@ -205,6 +232,7 @@ impl HudWindow {
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
             );
             let _ = ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
+            apply_hud_cursor(false);
         }
     }
 
@@ -229,6 +257,7 @@ impl HudWindow {
     }
 
     pub fn hide(&self) {
+        HUD_CURSOR_HAND.store(false, Ordering::Relaxed);
         unsafe {
             let _ = ShowWindow(self.hwnd, SW_HIDE);
         }
