@@ -2,6 +2,7 @@
   import { onMount, onDestroy } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { store } from './stores/settings.svelte';
+  import { UPDATE_CONFIG } from './config/updateConfig';
   import Sidebar from './components/Sidebar.svelte';
   import UpdateBanner from './components/UpdateBanner.svelte';
   import ActiveConversionBar, { type ActiveConversionInfo } from './components/ActiveConversionBar.svelte';
@@ -11,6 +12,10 @@
 
   let activeConversion = $state<ActiveConversionInfo | null>(null);
   let pollInterval: ReturnType<typeof setInterval> | null = null;
+
+  let hideAppShellForBlocker = $derived(
+    store.isBlockingUpdate && UPDATE_CONFIG.blockingUiStyle === 'fullpage',
+  );
 
   onMount(async () => {
     await store.loadSettings();
@@ -41,25 +46,31 @@
 </script>
 
 <div class="flex h-screen w-screen overflow-hidden bg-dark-bg text-gray-200 antialiased select-none font-sans">
-  <!-- Left Fixed Sidebar -->
-  <Sidebar />
+  {#if !store.isInitialized}
+    <!-- Empty themed frame while persisted settings resolve (~10ms) to prevent UI flash -->
+  {:else if hideAppShellForBlocker}
+    <UpdateBanner />
+  {:else}
+    <!-- Left Fixed Sidebar -->
+    <Sidebar />
 
-  <!-- Main Scrollable Content Area -->
-  <main class="flex-1 h-full overflow-y-auto px-6 py-6">
-    <div class="max-w-2xl mx-auto pb-6 space-y-6">
-      <UpdateBanner />
+    <!-- Main Scrollable Content Area -->
+    <main class="flex-1 h-full overflow-y-auto px-6 py-6">
+      <div class="max-w-2xl mx-auto pb-6 space-y-6">
+        <UpdateBanner />
 
-      {#if store.activeTab === 'home'}
-        <TabHome />
-      {:else if store.activeTab === 'plugins'}
-        <TabPlugins />
-      {:else if store.activeTab === 'settings'}
-        <TabSettings />
-      {/if}
+        {#if store.activeTab === 'home'}
+          <TabHome />
+        {:else if store.activeTab === 'plugins'}
+          <TabPlugins />
+        {:else if store.activeTab === 'settings'}
+          <TabSettings />
+        {/if}
 
-      {#if activeConversion && activeConversion.is_active}
-        <ActiveConversionBar info={activeConversion} />
-      {/if}
-    </div>
-  </main>
+        {#if activeConversion && activeConversion.is_active}
+          <ActiveConversionBar info={activeConversion} />
+        {/if}
+      </div>
+    </main>
+  {/if}
 </div>

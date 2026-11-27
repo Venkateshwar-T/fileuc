@@ -39,12 +39,57 @@
 {/snippet}
 
 {#if isVisible && pending}
-  {#if isBlocking}
-    <!-- Critical / Forced Update: Full-Page Blocker OR Fixed Non-Closable Modal -->
+  {#if isBlocking && UPDATE_CONFIG.blockingUiStyle === 'fullpage'}
+    <!-- Critical / Forced Update: Unboxed Full-Page Blocker Directly on App Body -->
     <div
-      class="fixed inset-0 z-50 flex items-center justify-center p-6 select-none {UPDATE_CONFIG.blockingUiStyle === 'fullpage'
-        ? 'bg-dark-bg'
-        : 'bg-black/65 backdrop-blur-sm'}"
+      class="fixed inset-0 z-50 bg-dark-bg flex flex-col items-center justify-center p-8 text-center select-none"
+      role="alertdialog"
+      aria-modal="true"
+      aria-labelledby="blocking-update-title"
+    >
+      <div class="w-full max-w-md flex flex-col items-center gap-5">
+        <div class="w-12 h-12 rounded-2xl bg-accent text-white shadow-md shadow-accent/25 flex items-center justify-center">
+          {#if store.isUpdating}
+            <Loader2 size={24} strokeWidth={2.4} class="animate-spin" />
+          {:else}
+            <ShieldAlert size={24} strokeWidth={2.2} />
+          {/if}
+        </div>
+
+        {#if store.isUpdating}
+          <div id="blocking-update-title" class="w-full max-w-xs flex flex-col gap-3 text-left">
+            {@render downloadingHeader('text-sm font-bold text-gray-900 dark:text-gray-100')}
+            {@render progressTrack()}
+          </div>
+        {:else}
+          <div class="flex flex-col items-center gap-2">
+            <h1 id="blocking-update-title" class="text-xl font-bold text-gray-900 dark:text-gray-100 tracking-tight">
+              {UPDATE_CONFIG.copy.blockingHeadline}
+            </h1>
+            <p class="text-xs text-gray-600 dark:text-gray-300 leading-relaxed max-w-sm">
+              {#if store.updateError}
+                <span class="text-red-500 font-medium">{store.updateError}</span>
+              {:else}
+                {UPDATE_CONFIG.copy.blockingBody}
+              {/if}
+            </p>
+          </div>
+
+          <button
+            type="button"
+            onclick={() => store.startUpdate()}
+            class="mt-1 inline-flex items-center justify-center gap-2 px-6 py-2.5 rounded-xl text-xs font-semibold bg-accent hover:bg-accent-hover text-white shadow-md shadow-accent/25 transition-all duration-150 cursor-pointer active:scale-[0.98]"
+          >
+            <ArrowDownToLine size={14} strokeWidth={2.4} />
+            <span>{UPDATE_CONFIG.copy.updateButtonLabel}</span>
+          </button>
+        {/if}
+      </div>
+    </div>
+  {:else if isBlocking}
+    <!-- Critical / Forced Update: Fixed Non-Closable Modal over Blurred App -->
+    <div
+      class="fixed inset-0 z-50 bg-black/65 backdrop-blur-sm flex items-center justify-center p-6 select-none"
       role="alertdialog"
       aria-modal="true"
       aria-labelledby="blocking-update-title"

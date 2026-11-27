@@ -84,12 +84,47 @@ export function createSettingsStore() {
 
   let uninstalledCount = $derived((ffmpeg.installed ? 0 : 1) + (docx.installed ? 0 : 1));
 
-  let pendingUpdate = $state<PendingUpdate | null>(null);
+  const BLOCKING_CACHE_KEY = 'fileuc_blocking_update';
+  let currentAppVersion = $state<string>('0.1.7');
+
+  function readCachedBlockingUpdate(): PendingUpdate | null {
+    try {
+      const raw = localStorage.getItem(BLOCKING_CACHE_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw) as PendingUpdate & { target_for_version?: string };
+      if (
+        parsed &&
+        parsed.priority === 'blocking' &&
+        parsed.target_for_version === currentAppVersion &&
+        parsed.version !== currentAppVersion
+      ) {
+        return parsed;
+      }
+      localStorage.removeItem(BLOCKING_CACHE_KEY);
+    } catch {}
+    return null;
+  }
+
+  function syncBlockingCache(update: PendingUpdate | null) {
+    try {
+      if (update && update.priority === 'blocking') {
+        localStorage.setItem(
+          BLOCKING_CACHE_KEY,
+          JSON.stringify({ ...update, target_for_version: currentAppVersion }),
+        );
+      } else {
+        localStorage.removeItem(BLOCKING_CACHE_KEY);
+      }
+    } catch {}
+  }
+
+  const cachedBlocking = typeof localStorage !== 'undefined' ? readCachedBlockingUpdate() : null;
+  let pendingUpdate = $state<PendingUpdate | null>(cachedBlocking);
   let isBlockingUpdate = $derived(pendingUpdate?.priority === 'blocking');
+  let isInitialized = $state<boolean>(Boolean(cachedBlocking));
   let bannerDismissed = $state<boolean>(false);
   let isCheckingUpdate = $state<boolean>(false);
   let updateStatusMessage = $state<string>('');
-  let currentAppVersion = $state<string>('0.1.7');
   let isUpdating = $state<boolean>(false);
   let updateProgress = $state<number>(0);
   let updateProgressText = $state<string>('');
@@ -150,16 +185,20 @@ export function createSettingsStore() {
         await applyTheme(data.theme);
         if (data.pending_update) {
           pendingUpdate = data.pending_update;
+          syncBlockingCache(data.pending_update);
           bannerDismissed = false;
+        } else {
+          pendingUpdate = null;
+          syncBlockingCache(null);
         }
       }
     } catch {
       await applyTheme('System');
+    } finally {
+      isInitialized = true;
     }
 
-    // Automatically check for updates on launch (force = false)
-    // If pendingUpdate was already set from disk, backend will instantly return it without hitting GitHub.
-    // If none was set, backend will check GitHub (offline resilient).
+    // Automatically check for updates on launch (with offline cache fallback)
     await checkForUpdates(false);
   }
 
@@ -173,10 +212,12 @@ export function createSettingsStore() {
         currentAppVersion = res.current_version;
         if (res.status === 'update_available' && res.update) {
           pendingUpdate = res.update;
+          syncBlockingCache(res.update);
           bannerDismissed = false; // Show banner if an update is detected
           updateStatusMessage = `v${res.update.version} available`;
         } else if (res.status === 'up_to_date') {
           pendingUpdate = null;
+          syncBlockingCache(null);
           if (force) {
             updateStatusMessage = 'Up to date';
             setTimeout(() => {
@@ -350,6 +391,7 @@ export function createSettingsStore() {
     get uninstalledCount() { return uninstalledCount; },
     get pendingUpdate() { return pendingUpdate; },
     get isBlockingUpdate() { return isBlockingUpdate; },
+    get isInitialized() { return isInitialized; },
     get bannerDismissed() { return bannerDismissed; },
     get isCheckingUpdate() { return isCheckingUpdate; },
     get updateStatusMessage() { return updateStatusMessage; },

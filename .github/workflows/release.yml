@@ -83,13 +83,15 @@ jobs:
             $tag = "${{ github.event.inputs.tag_name }}"
             if (-not $tag) { $tag = "v0.1.0" }
           }
+          $clean_tag = $tag -replace '-(critical|blocking|force)$', '' -replace '\+(critical|blocking)$', ''
           echo "tag=$tag" >> $env:GITHUB_OUTPUT
+          echo "display_name=FileUC $clean_tag" >> $env:GITHUB_OUTPUT
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.get_tag.outputs.tag }}
-          name: "FileUC ${{ steps.get_tag.outputs.tag }}"
+          name: ${{ steps.get_tag.outputs.display_name }}
           draft: false
           prerelease: false
           generate_release_notes: true
