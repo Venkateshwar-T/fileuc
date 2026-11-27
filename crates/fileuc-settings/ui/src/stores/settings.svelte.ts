@@ -5,11 +5,15 @@ export type Tab = 'home' | 'plugins' | 'settings';
 export type ThemeChoice = 'Dark' | 'Light' | 'System';
 export type ModifierChoice = 'Ctrl' | 'Alt' | 'Shift';
 
+export type UpdatePriority = 'standard' | 'blocking';
+
 export interface PendingUpdate {
   version: string;
   release_url: string;
   release_name: string | null;
   download_url: string | null;
+  priority?: UpdatePriority;
+  release_notes?: string | null;
 }
 
 export interface UpdateCheckResponse {
@@ -79,10 +83,11 @@ export function createSettingsStore() {
   let uninstalledCount = $derived((ffmpeg.installed ? 0 : 1) + (docx.installed ? 0 : 1));
 
   let pendingUpdate = $state<PendingUpdate | null>(null);
+  let isBlockingUpdate = $derived(pendingUpdate?.priority === 'blocking');
   let bannerDismissed = $state<boolean>(false);
   let isCheckingUpdate = $state<boolean>(false);
   let updateStatusMessage = $state<string>('');
-  let currentAppVersion = $state<string>('0.1.5');
+  let currentAppVersion = $state<string>('0.1.6');
   let isUpdating = $state<boolean>(false);
   let updateProgress = $state<number>(0);
   let updateProgressText = $state<string>('');
@@ -199,6 +204,7 @@ export function createSettingsStore() {
   }
 
   function dismissBanner() {
+    if (isBlockingUpdate) return;
     bannerDismissed = true;
   }
 
@@ -217,17 +223,17 @@ export function createSettingsStore() {
       await openReleaseUrl();
       return;
     }
+    if (isUpdating) return;
     isUpdating = true;
     updateError = null;
     updateProgress = 0.05;
-    updateProgressText = 'Connecting to update server...';
+    updateProgressText = `Downloading v${pendingUpdate.version}...`;
 
     try {
       await invoke('install_update_now', { downloadUrl: pendingUpdate.download_url });
     } catch (e) {
       isUpdating = false;
       updateError = String(e);
-      await openReleaseUrl();
     }
   }
 
@@ -336,6 +342,7 @@ export function createSettingsStore() {
     get docx() { return docx; },
     get uninstalledCount() { return uninstalledCount; },
     get pendingUpdate() { return pendingUpdate; },
+    get isBlockingUpdate() { return isBlockingUpdate; },
     get bannerDismissed() { return bannerDismissed; },
     get isCheckingUpdate() { return isCheckingUpdate; },
     get updateStatusMessage() { return updateStatusMessage; },

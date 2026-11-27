@@ -37,7 +37,7 @@
       onclick={() => store.checkForUpdates(true)}
       disabled={store.isCheckingUpdate}
       class="flex items-center justify-between w-full px-3 py-2 rounded-lg border border-dark-border bg-dark-card hover:bg-white/5 text-xs font-medium cursor-pointer disabled:opacity-60 disabled:cursor-wait"
-      title="Check GitHub for FileUC updates"
+      title="Check for updates"
     >
       <div class="flex items-center gap-2 truncate">
         <RefreshCw

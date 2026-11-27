@@ -82,6 +82,7 @@ pub fn run_tauri(initial_tab: i32) {
     }
 
     INITIAL_TAB.store(initial_tab, Ordering::Relaxed);
+    updater::cleanup_old_updates();
 
     tauri::Builder::default()
         .setup(|app| {

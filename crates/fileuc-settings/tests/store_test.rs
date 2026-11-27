@@ -45,7 +45,7 @@ fn corrupt_file_returns_defaults() {
 
 #[test]
 fn pending_update_persists_when_newer() {
-    use fileuc_settings::updater::PendingUpdate;
+    use fileuc_settings::updater::{PendingUpdate, UpdatePriority};
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("settings.json");
     let store = SettingsStore::new(path.clone());
@@ -55,28 +55,33 @@ fn pending_update_persists_when_newer() {
         release_url: "https://github.com/Venkateshwar-T/fileuc/releases/tag/v99.0.0".to_string(),
         release_name: Some("FileUC v99.0.0".to_string()),
         download_url: Some("https://github.com/Venkateshwar-T/fileuc/releases/download/v99.0.0/FileUC-Setup.exe".to_string()),
+        priority: UpdatePriority::Blocking,
+        release_notes: Some("Critical fix.".to_string()),
     });
     store.save(&s).unwrap();
 
     let store2 = SettingsStore::new(path);
     let loaded = store2.load();
-    assert!(loaded.pending_update.is_some());
-    assert_eq!(loaded.pending_update.unwrap().version, "99.0.0");
+    let pending = loaded.pending_update.expect("pending_update should persist");
+    assert_eq!(pending.version, "99.0.0");
+    assert_eq!(pending.priority, UpdatePriority::Blocking);
 }
 
 #[test]
 fn pending_update_cleared_when_current_or_older() {
-    use fileuc_settings::updater::PendingUpdate;
+    use fileuc_settings::updater::{PendingUpdate, UpdatePriority};
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("settings.json");
     let store = SettingsStore::new(path.clone());
     let mut s = store.load();
-    // 0.0.1 is older than current version (0.1.0)
+    // 0.0.1 is older than current version
     s.pending_update = Some(PendingUpdate {
         version: "0.0.1".to_string(),
         release_url: "https://github.com/Venkateshwar-T/fileuc/releases/tag/v0.0.1".to_string(),
         release_name: Some("FileUC v0.0.1".to_string()),
         download_url: None,
+        priority: UpdatePriority::Standard,
+        release_notes: None,
     });
     store.save(&s).unwrap();
 
