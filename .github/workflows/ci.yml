@@ -13,6 +13,7 @@ env:
 
 jobs:
   check-and-test:
+    if: github.event_name != 'push' || (!startsWith(github.event.head_commit.message, 'chore: release') && !startsWith(github.event.head_commit.message, 'chore: bump version'))
     name: Lint, Test & Frontend Build
     runs-on: windows-latest
 
