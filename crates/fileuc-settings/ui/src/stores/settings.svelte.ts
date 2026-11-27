@@ -89,7 +89,7 @@ export function createSettingsStore() {
   let bannerDismissed = $state<boolean>(false);
   let isCheckingUpdate = $state<boolean>(false);
   let updateStatusMessage = $state<string>('');
-  let currentAppVersion = $state<string>('0.1.6');
+  let currentAppVersion = $state<string>('0.1.7');
   let isUpdating = $state<boolean>(false);
   let updateProgress = $state<number>(0);
   let updateProgressText = $state<string>('');
