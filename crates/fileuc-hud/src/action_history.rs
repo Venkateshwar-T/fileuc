@@ -190,6 +190,14 @@ pub fn get_global_history() -> &'static Mutex<ActionHistoryTracker> {
 }
 
 pub fn record_action_usage(extension: &str, action: ConversionAction) {
+    if matches!(
+        action,
+        ConversionAction::ReceiveFiles
+            | ConversionAction::SendFiles
+            | ConversionAction::QuickQr
+    ) {
+        return;
+    }
     if let Ok(mut tracker) = get_global_history().lock() {
         tracker.record(extension, action);
     }

@@ -6,10 +6,17 @@ use fileuc_daemon::ipc::{send_message, start_server, IpcMessage};
 use fileuc_daemon::single_instance::acquire;
 use fileuc_hook::gesture::{GestureDetector, GestureEvent, Modifiers};
 use fileuc_hook::mouse_hook::{
-    install, set_key_capture, set_mouse_capture_rect, set_qr_shortcut, set_search_shortcut, HookEvent,
+    install, set_key_capture, set_mouse_capture_rect, set_qr_shortcut, set_receive_shortcut,
+    set_search_shortcut, HookEvent,
 };
 use fileuc_hook::shortcut::parse_shortcut;
-use fileuc_daemon::share_server::{start_share_server, ShareServerEvent, ShareServerHandle};
+use fileuc_daemon::file_picker::spawn_multi_file_picker;
+use fileuc_daemon::receive_server::{
+    start_receive_server, ReceiveServerEvent, ReceiveServerHandle,
+};
+use fileuc_daemon::share_server::{
+    start_share_server, start_text_share_server, ShareServerEvent, ShareServerHandle,
+};
 use fileuc_hud::donut_geometry::HitResult;
 use fileuc_hud::drop_target::DropTargetEvent;
 use fileuc_hud::alert_card::{render_alert_card, AlertCardState};
@@ -18,7 +25,7 @@ use fileuc_hud::font::FontContext;
 use fileuc_hud::hud_window::HudWindow;
 use fileuc_hud::password_card::{render_password_card, PasswordCardMode, PasswordCardState};
 use fileuc_hud::progress_ring::ProgressTracker;
-use fileuc_hud::qr_card::{render_qr_card, QrCardState, QrShareTab};
+use fileuc_hud::qr_card::{format_file_size, render_qr_card, QrCardMode, QrCardState, QrShareTab};
 use fileuc_hud::quick_qr_card::{render_quick_qr_card, QuickQrCardState, QuickQrTab};
 use fileuc_hud::reduce_size_card::{render_reduce_size_card, ReduceSizeCardState};
 use fileuc_hud::renderer::{render_donut, render_progress, DonutState};
@@ -267,7 +274,9 @@ fn main() {
     let mut quick_qr_card_state: Option<QuickQrCardState> = None;
     let mut search_hud_state: Option<SearchHudState> = None;
     let mut search_clipboard_link_url: Option<String> = None;
+    let mut search_clipboard_share_text: Option<(String, bool)> = None;
     let mut search_clipboard_override_save_dir: Option<PathBuf> = None;
+    let mut file_picker_rx: Option<mpsc::Receiver<Option<Vec<PathBuf>>>> = None;
     let mut password_card_state: Option<PasswordCardState> = None;
     let mut reduce_size_card_state: Option<ReduceSizeCardState> = None;
     let mut bulk_rename_card_state: Option<BulkRenameCardState> = None;
@@ -276,6 +285,7 @@ fn main() {
     let mut cloudflare_tunnel: Option<fileuc_daemon::cloudflared::CloudflareTunnel> = None;
     let mut cloudflared_dl_rx: Option<mpsc::Receiver<fileuc_daemon::cloudflared::DownloadProgress>> = None;
     let mut share_server: Option<ShareServerHandle> = None;
+    let mut receive_server: Option<ReceiveServerHandle> = None;
     let shared_conversion_state = Arc::new(fileuc_daemon::conversion_state::SharedConversionWriter::new());
     let mut conversion_in_flight: Option<(JoinHandle<ConversionResult>, Arc<AtomicU32>, Arc<AtomicBool>)> = None;
     let mut active_conversion_summary = String::new();
@@ -300,11 +310,12 @@ fn main() {
         });
     }
 
-    // Register initial quick QR and search HUD shortcuts from persistent settings
+    // Register initial quick QR, search HUD, and optional receive shortcuts from persistent settings
     {
         let st = current_settings.lock().unwrap_or_else(|e| e.into_inner());
         set_qr_shortcut(parse_shortcut(&st.qr_shortcut));
         set_search_shortcut(parse_shortcut(&st.search_shortcut));
+        set_receive_shortcut(parse_shortcut(&st.receive_shortcut));
     }
 
     let fonts = FontContext::new();
@@ -360,6 +371,7 @@ fn main() {
             detector.set_required_modifier(new_mod);
             set_qr_shortcut(parse_shortcut(&st.qr_shortcut));
             set_search_shortcut(parse_shortcut(&st.search_shortcut));
+            set_receive_shortcut(parse_shortcut(&st.receive_shortcut));
             cached_service_enabled = st.service_enabled;
             cached_theme_choice = st.theme;
             cached_theme = Theme::resolve(match cached_theme_choice {
@@ -396,6 +408,35 @@ fn main() {
                 fileuc_daemon::tray::TrayEvent::OpenSettings => {
                     let st = current_settings.lock().unwrap_or_else(|e| e.into_inner()).clone();
                     settings_controller.show(st);
+                }
+                fileuc_daemon::tray::TrayEvent::ReceiveFiles => {
+                    if let Some(ref mut d) = donut_state {
+                        let _ = d;
+                    }
+                    donut_state = None;
+                    dismiss_quick_qr_card(&mut quick_qr_card_state, &mut hud);
+                    dismiss_search_hud(&mut search_hud_state, &mut hud, &mut current_files, &mut current_actions);
+                    dismiss_password_card(&mut password_card_state, &mut hud, &mut current_files, &mut current_actions);
+                    dismiss_reduce_size_card(&mut reduce_size_card_state, &mut hud, &mut current_files, &mut current_actions);
+                    dismiss_bulk_rename_card(&mut bulk_rename_card_state, &mut hud, &mut current_files, &mut current_actions);
+                    dismiss_alert_card(&mut alert_card_state, &mut hud, &mut current_files, &mut current_actions);
+                    let st = current_settings.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                    launch_receive_qr_card(
+                        &st,
+                        &mut hud,
+                        &mut hud_center,
+                        &mut pixmap,
+                        &cached_theme,
+                        &fonts,
+                        &mut qr_card_state,
+                        &mut share_server,
+                        &mut receive_server,
+                        &mut pinggy_tunnel,
+                        &mut cloudflare_tunnel,
+                        &mut current_files,
+                        &mut current_actions,
+                        &mut progress_tracker,
+                    );
                 }
                 fileuc_daemon::tray::TrayEvent::ToggleService => {
                     let new_val = {
@@ -479,6 +520,7 @@ fn main() {
                                 &mut current_actions,
                             );
                             search_clipboard_link_url = None;
+                            search_clipboard_share_text = None;
                             search_clipboard_override_save_dir = None;
                         }
                     } else if let Some(ref mut card) = quick_qr_card_state {
@@ -620,6 +662,7 @@ fn main() {
                             dismiss_qr_card(
                                 &mut qr_card_state,
                                 &mut share_server,
+                                &mut receive_server,
                                 &mut pinggy_tunnel,
                                 &mut cloudflare_tunnel,
                                 &mut hud,
@@ -627,7 +670,21 @@ fn main() {
                                 &mut current_actions,
                             );
                         } else if card.hit_test_copy_btn(rel_x, rel_y, cx, cy) {
-                            if let Some(url) = card.current_share_url() {
+                            if card.is_open_folder_active() {
+                                if let Some(ref target) = card.received_target_path {
+                                    open_in_explorer_select(target);
+                                }
+                                dismiss_qr_card(
+                                    &mut qr_card_state,
+                                    &mut share_server,
+                                    &mut receive_server,
+                                    &mut pinggy_tunnel,
+                                    &mut cloudflare_tunnel,
+                                    &mut hud,
+                                    &mut current_files,
+                                    &mut current_actions,
+                                );
+                            } else if let Some(url) = card.current_share_url() {
                                 fileuc_daemon::clipboard::set_clipboard_text(url);
                                 card.copy_feedback_timer = Some(Instant::now());
                                 qr_card_dirty = true;
@@ -655,18 +712,12 @@ fn main() {
                                     QrShareTab::Internet => {
                                         card.switch_tab(QrShareTab::Internet);
                                         if card.is_cloudflared_installed && card.internet_url.is_none() {
-                                            if let Some(ref s) = share_server {
-                                                let port = s.port;
-                                                let path = s.url.split('/').skip(3).collect::<Vec<&str>>().join("/");
-                                                match fileuc_daemon::cloudflared::CloudflareTunnel::start(port, &format!("/{}", path)) {
-                                                    Ok(tunnel) => {
-                                                        cloudflare_tunnel = Some(tunnel);
-                                                    }
-                                                    Err(e) => {
-                                                        card.set_tunnel_error(&e);
-                                                    }
-                                                }
-                                            }
+                                            start_tunnel_for_endpoint(
+                                                &share_server,
+                                                &receive_server,
+                                                card,
+                                                &mut cloudflare_tunnel,
+                                            );
                                         }
                                         qr_card_dirty = true;
                                     }
@@ -931,6 +982,7 @@ fn main() {
                                 &mut current_actions,
                             );
                             search_clipboard_link_url = None;
+                            search_clipboard_share_text = None;
                             search_clipboard_override_save_dir = None;
                         } else if vk == 0x08 { // VK_BACK
                             state.pop_char(&fonts);
@@ -1106,6 +1158,7 @@ fn main() {
                             dismiss_qr_card(
                                 &mut qr_card_state,
                                 &mut share_server,
+                                &mut receive_server,
                                 &mut pinggy_tunnel,
                                 &mut cloudflare_tunnel,
                                 &mut hud,
@@ -1114,42 +1167,98 @@ fn main() {
                             );
                         }
 
-                        let mut pt = windows::Win32::Foundation::POINT::default();
-                        unsafe {
-                            let _ = windows::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut pt);
-                        }
-                        hud_center = hud.position_at_center(pt.x, pt.y);
-                        if hud.size() != pixmap.width() {
-                            pixmap = tiny_skia::Pixmap::new(hud.size(), hud.size()).unwrap();
+                        launch_quick_qr_card(
+                            None,
+                            &detected_wifi_ssid,
+                            &mut hud,
+                            &mut hud_center,
+                            &mut pixmap,
+                            &cached_theme,
+                            &fonts,
+                            &mut quick_qr_card_state,
+                            &mut quick_qr_card_dirty,
+                        );
+                    }
+                    None
+                }
+                HookEvent::ReceiveShortcutTriggered => {
+                    if cached_service_enabled {
+                        let is_receive_open = qr_card_state
+                            .as_ref()
+                            .map(|c| c.mode == QrCardMode::ReceiveFromPhone)
+                            .unwrap_or(false);
+                        if is_receive_open {
+                            dismiss_qr_card(
+                                &mut qr_card_state,
+                                &mut share_server,
+                                &mut receive_server,
+                                &mut pinggy_tunnel,
+                                &mut cloudflare_tunnel,
+                                &mut hud,
+                                &mut current_files,
+                                &mut current_actions,
+                            );
+                            continue;
                         }
 
-                        let mut card = QuickQrCardState::new(hud.dpi_scale());
-                        let cached_ssid = detected_wifi_ssid.lock().unwrap_or_else(|e| e.into_inner()).clone();
-                        card.detected_ssid = cached_ssid;
-                        if card.detected_ssid.is_none() {
-                            let wifi_clone = detected_wifi_ssid.clone();
-                            std::thread::spawn(move || {
-                                if let Some(ssid) = fileuc_daemon::wifi::detect_wifi_ssid() {
-                                    *wifi_clone.lock().unwrap_or_else(|e| e.into_inner()) = Some(ssid);
-                                }
-                            });
+                        if donut_state.is_some() {
+                            donut_state = None;
+                            hud.hide();
+                            current_files.clear();
+                            current_actions.clear();
                         }
-                        if let Some(clip_text) = fileuc_daemon::clipboard::get_clipboard_text() {
-                            let trimmed = clip_text.trim();
-                            if !trimmed.is_empty() && fileuc_daemon::clipboard::is_url_string(trimmed) {
-                                card.input_text = trimmed.to_string();
-                                card.tab = QuickQrTab::Link;
-                                card.update_qr();
-                            }
+                        if quick_qr_card_state.is_some() {
+                            dismiss_quick_qr_card(&mut quick_qr_card_state, &mut hud);
                         }
-                        let (l, t, w, h) = card.card_bounds(hud_center.0 as f32, hud_center.1 as f32);
-                        set_mouse_capture_rect(Some((l as i32, t as i32, (l + w) as i32, (t + h) as i32)));
-                        set_key_capture(true);
-                        render_quick_qr_card(&card, &cached_theme, &fonts, &mut pixmap);
-                        hud.repaint(&pixmap);
-                        hud.show();
-                        quick_qr_card_state = Some(card);
-                        quick_qr_card_dirty = false;
+                        if search_hud_state.is_some() {
+                            dismiss_search_hud(
+                                &mut search_hud_state,
+                                &mut hud,
+                                &mut current_files,
+                                &mut current_actions,
+                            );
+                        }
+                        if password_card_state.is_some() {
+                            dismiss_password_card(
+                                &mut password_card_state,
+                                &mut hud,
+                                &mut current_files,
+                                &mut current_actions,
+                            );
+                        }
+                        if reduce_size_card_state.is_some() {
+                            dismiss_reduce_size_card(
+                                &mut reduce_size_card_state,
+                                &mut hud,
+                                &mut current_files,
+                                &mut current_actions,
+                            );
+                        }
+                        if bulk_rename_card_state.is_some() {
+                            dismiss_bulk_rename_card(
+                                &mut bulk_rename_card_state,
+                                &mut hud,
+                                &mut current_files,
+                                &mut current_actions,
+                            );
+                        }
+                        let st = current_settings.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                        launch_receive_qr_card(
+                            &st,
+                            &mut hud,
+                            &mut hud_center,
+                            &mut pixmap,
+                            &cached_theme,
+                            &fonts,
+                            &mut qr_card_state,
+                            &mut share_server,
+                            &mut receive_server,
+                            &mut pinggy_tunnel,
+                            &mut cloudflare_tunnel,
+                            &mut current_files,
+                            &mut current_actions,
+                            &mut progress_tracker,
+                        );
                     }
                     None
                 }
@@ -1202,6 +1311,7 @@ fn main() {
                             dismiss_qr_card(
                                 &mut qr_card_state,
                                 &mut share_server,
+                                &mut receive_server,
                                 &mut pinggy_tunnel,
                                 &mut cloudflare_tunnel,
                                 &mut hud,
@@ -1221,6 +1331,7 @@ fn main() {
                         let mut clipboard_preview: Option<ClipboardPreview> = None;
                         let mut is_clipboard_link = false;
                         let mut clip_link_url: Option<String> = None;
+                        let mut clip_share_text: Option<(String, bool)> = None;
                         let mut clip_save_dir: Option<PathBuf> = None;
 
                         if valid_files.is_empty() {
@@ -1244,11 +1355,13 @@ fn main() {
                                     fileuc_daemon::clipboard::ClipboardKind::Link => {
                                         if let Some(ref text) = payload.raw_text {
                                             clipboard_preview = Some(ClipboardPreview::Link(text.clone()));
+                                            clip_share_text = Some((text.clone(), true));
                                         }
                                     }
                                     fileuc_daemon::clipboard::ClipboardKind::Text => {
                                         if let Some(ref text) = payload.raw_text {
                                             clipboard_preview = Some(ClipboardPreview::Text(text.clone()));
+                                            clip_share_text = Some((text.clone(), false));
                                         }
                                     }
                                     fileuc_daemon::clipboard::ClipboardKind::Files => {
@@ -1272,46 +1385,59 @@ fn main() {
                             }
                         }
 
-                        if valid_files.is_empty() {
-                            // Silently ignore if no file/folder is selected and clipboard has no usable payload
-                            continue;
-                        }
-
-                        let sample_ext = valid_files
-                            .first()
-                            .and_then(|f| f.extension())
-                            .and_then(|e| e.to_str())
-                            .unwrap_or("");
-
                         let has_ffmpeg = fileuc_convert::media::find_ffmpeg().is_some();
-                        let raw_actions = if is_clipboard_link {
-                            vec![
-                                ConversionAction::MdToTxt,
-                                ConversionAction::TxtToMd,
-                                ConversionAction::TxtToPdf,
-                                ConversionAction::ToHtml,
-                                ConversionAction::Share,
-                            ]
-                        } else if clipboard_title.as_deref() == Some("Text from Clipboard") {
-                            vec![
-                                ConversionAction::MdToTxt,
-                                ConversionAction::TxtToMd,
-                                ConversionAction::TxtToPdf,
-                                ConversionAction::ToHtml,
-                            ]
+                        let (actions, sample_ext) = if valid_files.is_empty() {
+                            // Empty-state HUD: no selection and no clipboard payload
+                            current_files.clear();
+                            (
+                                vec![
+                                    ConversionAction::ReceiveFiles,
+                                    ConversionAction::SendFiles,
+                                    ConversionAction::QuickQr,
+                                ],
+                                String::new(),
+                            )
                         } else {
-                            filter_actions(&valid_files, has_ffmpeg)
+                            let sample_ext = valid_files
+                                .first()
+                                .and_then(|f| f.extension())
+                                .and_then(|e| e.to_str())
+                                .unwrap_or("")
+                                .to_string();
+
+                            let raw_actions = if is_clipboard_link {
+                                vec![
+                                    ConversionAction::MdToTxt,
+                                    ConversionAction::TxtToMd,
+                                    ConversionAction::TxtToPdf,
+                                    ConversionAction::ToHtml,
+                                    ConversionAction::Share,
+                                ]
+                            } else if clipboard_title.as_deref() == Some("Text from Clipboard") {
+                                vec![
+                                    ConversionAction::MdToTxt,
+                                    ConversionAction::TxtToMd,
+                                    ConversionAction::TxtToPdf,
+                                    ConversionAction::ToHtml,
+                                    ConversionAction::Share,
+                                ]
+                            } else {
+                                filter_actions(&valid_files, has_ffmpeg)
+                            };
+                            let mut expanded = expand_to_leaf_actions(&raw_actions);
+                            let missing = get_missing_plugins();
+                            expanded.retain(|a| !missing.contains(a));
+                            if !expanded.contains(&ConversionAction::ReceiveFiles) {
+                                expanded.push(ConversionAction::ReceiveFiles);
+                            }
+                            if expanded.is_empty() {
+                                continue;
+                            }
+                            order_tracker.update_selection(&valid_files);
+                            current_files = order_tracker.order_files(&valid_files);
+                            (expanded, sample_ext)
                         };
-                        let mut actions = expand_to_leaf_actions(&raw_actions);
-                        let missing = get_missing_plugins();
-                        actions.retain(|a| !missing.contains(a));
 
-                        if actions.is_empty() {
-                            continue;
-                        }
-
-                        order_tracker.update_selection(&valid_files);
-                        current_files = order_tracker.order_files(&valid_files);
                         current_actions = actions.clone();
 
                         let mut pt = windows::Win32::Foundation::POINT::default();
@@ -1342,7 +1468,7 @@ fn main() {
                             pixmap = tiny_skia::Pixmap::new(hud.size(), hud.size()).unwrap();
                         }
 
-                        let mut state = SearchHudState::new_with_ext(&actions, sample_ext, hud.dpi_scale(), flip_above, &fonts);
+                        let mut state = SearchHudState::new_with_ext(&actions, &sample_ext, hud.dpi_scale(), flip_above, &fonts);
                         state.clipboard_title = clipboard_title;
                         state.clipboard_subtitle = clipboard_subtitle;
                         state.is_clipboard_link = is_clipboard_link;
@@ -1352,6 +1478,7 @@ fn main() {
                             state.update_layout(&fonts);
                         }
                         search_clipboard_link_url = clip_link_url;
+                        search_clipboard_share_text = clip_share_text;
                         search_clipboard_override_save_dir = clip_save_dir;
                         let (l, t, w, h) = state.overall_bounds(hud_center.0 as f32, hud_center.1 as f32);
                         set_mouse_capture_rect(Some((l as i32, t as i32, (l + w) as i32, (t + h) as i32)));
@@ -1895,29 +2022,118 @@ fn main() {
         if let Some(action) = submit_search_action.take() {
             set_key_capture(false);
             set_mouse_capture_rect(None);
-            let is_clip_link = search_hud_state.as_ref().map(|s| s.is_clipboard_link).unwrap_or(false);
-            let clip_link_url = search_clipboard_link_url.take();
+            let _clip_link_url = search_clipboard_link_url.take();
+            let clip_share_text = search_clipboard_share_text.take();
             let clip_save_dir = search_clipboard_override_save_dir.take();
             search_hud_state = None;
 
-            if is_clip_link && action == ConversionAction::Share {
-                // Open QuickQrCard with the link pre-entered
-                let mut card = QuickQrCardState::new(hud.dpi_scale());
-                card.tab = QuickQrTab::Link;
-                if let Some(link) = clip_link_url {
-                    card.input_text = link;
-                    card.update_qr();
-                }
-                let (l, t, w, h) = card.card_bounds(hud_center.0 as f32, hud_center.1 as f32);
-                set_mouse_capture_rect(Some((l as i32, t as i32, (l + w) as i32, (t + h) as i32)));
-                set_key_capture(true);
-                render_quick_qr_card(&card, &cached_theme, &fonts, &mut pixmap);
-                hud.repaint(&pixmap);
-                hud.show();
-                quick_qr_card_state = Some(card);
+            if action == ConversionAction::QuickQr {
                 current_files.clear();
                 current_actions.clear();
+                launch_quick_qr_card(
+                    None,
+                    &detected_wifi_ssid,
+                    &mut hud,
+                    &mut hud_center,
+                    &mut pixmap,
+                    &cached_theme,
+                    &fonts,
+                    &mut quick_qr_card_state,
+                    &mut quick_qr_card_dirty,
+                );
                 continue;
+            }
+
+            if action == ConversionAction::ReceiveFiles {
+                current_files.clear();
+                current_actions.clear();
+                fileuc_daemon::clipboard::cleanup_clipboard_temp_files();
+                let st = current_settings.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                launch_receive_qr_card(
+                    &st,
+                    &mut hud,
+                    &mut hud_center,
+                    &mut pixmap,
+                    &cached_theme,
+                    &fonts,
+                    &mut qr_card_state,
+                    &mut share_server,
+                    &mut receive_server,
+                    &mut pinggy_tunnel,
+                    &mut cloudflare_tunnel,
+                    &mut current_files,
+                    &mut current_actions,
+                    &mut progress_tracker,
+                );
+                continue;
+            }
+
+            if action == ConversionAction::SendFiles {
+                hud.hide();
+                current_files.clear();
+                current_actions.clear();
+                fileuc_daemon::clipboard::cleanup_clipboard_temp_files();
+                if let Some(rx) = spawn_multi_file_picker(main_thread_id) {
+                    file_picker_rx = Some(rx);
+                }
+                continue;
+            }
+
+            if action == ConversionAction::Share {
+                if let Some((text, is_link)) = clip_share_text {
+                    current_files.clear();
+                    current_actions.clear();
+                    fileuc_daemon::clipboard::cleanup_clipboard_temp_files();
+                    if hud.size() != pixmap.width() {
+                        pixmap = tiny_skia::Pixmap::new(hud.size(), hud.size()).unwrap();
+                    }
+                    let dpi_scale = hud.dpi_scale();
+                    match start_text_share_server(&text, is_link).and_then(|handle| {
+                        QrCardState::new_with_mode(
+                            &handle.url,
+                            &handle.file_name,
+                            &format_file_size(handle.file_size),
+                            QrCardMode::SendText,
+                            dpi_scale,
+                        )
+                        .map(|mut state| {
+                            state.is_cloudflared_installed =
+                                fileuc_daemon::cloudflared::is_cloudflared_installed();
+                            (handle, state)
+                        })
+                    }) {
+                        Ok((handle, state)) => {
+                            let (l, t, w, h) =
+                                state.card_bounds(hud_center.0 as f32, hud_center.1 as f32);
+                            set_mouse_capture_rect(Some((
+                                l as i32,
+                                t as i32,
+                                (l + w) as i32,
+                                (t + h) as i32,
+                            )));
+                            set_key_capture(false);
+                            render_qr_card(&state, &cached_theme, &fonts, &mut pixmap);
+                            hud.repaint(&pixmap);
+                            hud.show();
+                            qr_card_state = Some(state);
+                            share_server = Some(handle);
+                        }
+                        Err(err) => {
+                            let mut tracker = ProgressTracker::new();
+                            tracker.mark_failure(err);
+                            progress_tracker = Some(tracker);
+                            let half = (44.0 * dpi_scale) as i32;
+                            set_mouse_capture_rect(Some((
+                                hud_center.0 - half,
+                                hud_center.1 - half,
+                                hud_center.0 + half,
+                                hud_center.1 + half,
+                            )));
+                            hud.show();
+                        }
+                    }
+                    continue;
+                }
             }
 
             let override_settings = if let Some(save_dir) = clip_save_dir {
@@ -2024,18 +2240,12 @@ fn main() {
                             card.download_pct = None;
                             qr_card_dirty = true;
                             if card.tab == QrShareTab::Internet && card.internet_url.is_none() {
-                                if let Some(ref s) = share_server {
-                                    let port = s.port;
-                                    let path = s.url.split('/').skip(3).collect::<Vec<&str>>().join("/");
-                                    match fileuc_daemon::cloudflared::CloudflareTunnel::start(port, &format!("/{}", path)) {
-                                        Ok(tunnel) => {
-                                            cloudflare_tunnel = Some(tunnel);
-                                        }
-                                        Err(e) => {
-                                            card.set_tunnel_error(&e);
-                                        }
-                                    }
-                                }
+                                start_tunnel_for_endpoint(
+                                    &share_server,
+                                    &receive_server,
+                                    card,
+                                    &mut cloudflare_tunnel,
+                                );
                             }
                         }
                         fileuc_daemon::cloudflared::DownloadProgress::Error(err) => {
@@ -2109,6 +2319,105 @@ fn main() {
             }
         }
 
+        // 4.5.1. Process Receive Server Events
+        if let Some(ref server) = receive_server {
+            while let Ok(event) = server.rx.try_recv() {
+                if let Some(ref mut card) = qr_card_state {
+                    match event {
+                        ReceiveServerEvent::ClientConnected => {
+                            card.set_scanned();
+                            qr_card_dirty = true;
+                        }
+                        ReceiveServerEvent::UploadProgress { percent } => {
+                            card.set_receiving_progress(percent);
+                            qr_card_dirty = true;
+                        }
+                        ReceiveServerEvent::FilesReceived { count, first_path } => {
+                            card.set_receive_files_success(count, first_path);
+                            qr_card_dirty = true;
+                        }
+                        ReceiveServerEvent::TextReceived => {
+                            card.set_receive_text_success();
+                            qr_card_dirty = true;
+                        }
+                        ReceiveServerEvent::Error(err) => {
+                            card.set_failed(&err);
+                            qr_card_dirty = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        // 4.5.2. Process Native File Picker Result ("Send" chip)
+        if let Some(ref rx) = file_picker_rx {
+            match rx.try_recv() {
+                Ok(maybe_files) => {
+                    file_picker_rx = None;
+                    if let Some(picked_files) = maybe_files {
+                        if !picked_files.is_empty() {
+                            if qr_card_state.is_some() {
+                                dismiss_qr_card(
+                                    &mut qr_card_state,
+                                    &mut share_server,
+                                    &mut receive_server,
+                                    &mut pinggy_tunnel,
+                                    &mut cloudflare_tunnel,
+                                    &mut hud,
+                                    &mut current_files,
+                                    &mut current_actions,
+                                );
+                            }
+                            let mut pt = windows::Win32::Foundation::POINT::default();
+                            unsafe {
+                                let _ = windows::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut pt);
+                            }
+                            hud_center = hud.position_at_center(pt.x, pt.y);
+                            if hud.size() != pixmap.width() {
+                                pixmap = tiny_skia::Pixmap::new(hud.size(), hud.size()).unwrap();
+                            }
+                            let st = Arc::new(current_settings.lock().unwrap_or_else(|e| e.into_inner()).clone());
+                            current_files = picked_files.clone();
+                            execute_conversion_action(
+                                ConversionAction::Share,
+                                picked_files,
+                                st,
+                                hud.dpi_scale(),
+                                hud_center,
+                                &mut alert_card_state,
+                                &mut alert_card_dirty,
+                                &mut password_card_state,
+                                &mut password_card_dirty,
+                                &mut reduce_size_card_state,
+                                &mut reduce_size_card_dirty,
+                                &mut bulk_rename_card_state,
+                                &mut bulk_rename_card_dirty,
+                                &mut qr_card_state,
+                                &mut share_server,
+                                &mut progress_tracker,
+                                &mut conversion_in_flight,
+                                &shared_conversion_state,
+                                &mut active_conversion_summary,
+                                &mut active_conversion_action,
+                            );
+                            if let Some(ref card) = qr_card_state {
+                                render_qr_card(card, &cached_theme, &fonts, &mut pixmap);
+                                hud.repaint(&pixmap);
+                                hud.show();
+                                qr_card_dirty = false;
+                            } else if progress_tracker.is_some() {
+                                hud.show();
+                            }
+                        }
+                    }
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    file_picker_rx = None;
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+        }
+
         // 4.6. Enforce 5-minute timeout when QR code is not scanned, or scanned but no download taking place
         if let Some(ref card) = qr_card_state {
             use fileuc_hud::qr_card::QrShareStatus;
@@ -2121,7 +2430,15 @@ fn main() {
                     start.elapsed() >= Duration::from_secs(300)
                 }
                 QrShareStatus::Sending => false, // Active transfer in progress: keep alive!
-                QrShareStatus::Success => false, // Handled by 1.5s auto-dismiss
+                QrShareStatus::Success => {
+                    if card.mode == QrCardMode::ReceiveFromPhone && card.received_is_text {
+                        card.success_time
+                            .map(|t| t.elapsed() >= Duration::from_secs(300))
+                            .unwrap_or(false)
+                    } else {
+                        false
+                    }
+                }
                 QrShareStatus::Failed(_) => card.session_start.elapsed() >= Duration::from_secs(300),
             };
 
@@ -2129,6 +2446,7 @@ fn main() {
                 dismiss_qr_card(
                     &mut qr_card_state,
                     &mut share_server,
+                    &mut receive_server,
                     &mut pinggy_tunnel,
                     &mut cloudflare_tunnel,
                     &mut hud,
@@ -2199,6 +2517,7 @@ fn main() {
                 dismiss_qr_card(
                     &mut qr_card_state,
                     &mut share_server,
+                    &mut receive_server,
                     &mut pinggy_tunnel,
                     &mut cloudflare_tunnel,
                     &mut hud,
@@ -2246,6 +2565,8 @@ fn main() {
             || qr_card_state.is_some()
             || quick_qr_card_state.is_some()
             || search_hud_state.is_some()
+            || file_picker_rx.is_some()
+            || receive_server.is_some()
             || pending_drag_ended.is_some()
             || conversion_in_flight.is_some()
             || cloudflared_dl_rx.as_ref().map_or(false, |_| qr_card_state.as_ref().map_or(false, |c| c.is_downloading));
@@ -2652,6 +2973,7 @@ fn dismiss_bulk_rename_card(
 fn dismiss_qr_card(
     qr_card_state: &mut Option<QrCardState>,
     share_server: &mut Option<ShareServerHandle>,
+    receive_server: &mut Option<ReceiveServerHandle>,
     pinggy_tunnel: &mut Option<fileuc_daemon::pinggy::PinggyTunnel>,
     cloudflare_tunnel: &mut Option<fileuc_daemon::cloudflared::CloudflareTunnel>,
     hud: &mut HudWindow,
@@ -2668,10 +2990,196 @@ fn dismiss_qr_card(
     if let Some(mut s) = share_server.take() {
         s.stop();
     }
+    if let Some(mut r) = receive_server.take() {
+        r.stop();
+    }
     *qr_card_state = None;
     hud.hide();
     files.clear();
     actions.clear();
+}
+
+fn start_tunnel_for_endpoint(
+    share_server: &Option<ShareServerHandle>,
+    receive_server: &Option<ReceiveServerHandle>,
+    card: &mut QrCardState,
+    cloudflare_tunnel: &mut Option<fileuc_daemon::cloudflared::CloudflareTunnel>,
+) {
+    let endpoint = share_server
+        .as_ref()
+        .map(|s| (s.port, s.url.as_str()))
+        .or_else(|| receive_server.as_ref().map(|r| (r.port, r.url.as_str())));
+
+    if let Some((port, url)) = endpoint {
+        let path = url.split('/').skip(3).collect::<Vec<&str>>().join("/");
+        match fileuc_daemon::cloudflared::CloudflareTunnel::start(port, &format!("/{}", path)) {
+            Ok(tunnel) => {
+                *cloudflare_tunnel = Some(tunnel);
+            }
+            Err(e) => {
+                card.set_tunnel_error(&e);
+            }
+        }
+    }
+}
+
+fn open_in_explorer_select(target: &std::path::Path) {
+    if target.is_dir() {
+        let _ = std::process::Command::new("explorer.exe").arg(target).spawn();
+    } else if target.exists() {
+        let _ = std::process::Command::new("explorer.exe")
+            .arg(format!("/select,{}", target.display()))
+            .spawn();
+    } else if let Some(parent) = target.parent() {
+        let _ = std::process::Command::new("explorer.exe").arg(parent).spawn();
+    }
+}
+
+fn format_folder_display(save_dir: &std::path::Path) -> String {
+    let leaf = save_dir
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "FileUC Received".to_string());
+    if let Some(parent) = save_dir.parent().and_then(|p| p.file_name()) {
+        format!("{}\\{}", parent.to_string_lossy(), leaf)
+    } else {
+        leaf
+    }
+}
+
+fn launch_quick_qr_card(
+    prefill_link: Option<String>,
+    detected_wifi_ssid: &Arc<Mutex<Option<String>>>,
+    hud: &mut HudWindow,
+    hud_center: &mut (i32, i32),
+    pixmap: &mut tiny_skia::Pixmap,
+    cached_theme: &Theme,
+    fonts: &FontContext,
+    quick_qr_card_state: &mut Option<QuickQrCardState>,
+    quick_qr_card_dirty: &mut bool,
+) {
+    let mut pt = windows::Win32::Foundation::POINT::default();
+    unsafe {
+        let _ = windows::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut pt);
+    }
+    *hud_center = hud.position_at_center(pt.x, pt.y);
+    if hud.size() != pixmap.width() {
+        *pixmap = tiny_skia::Pixmap::new(hud.size(), hud.size()).unwrap();
+    }
+
+    let mut card = QuickQrCardState::new(hud.dpi_scale());
+    let cached_ssid = detected_wifi_ssid.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    card.detected_ssid = cached_ssid;
+    if card.detected_ssid.is_none() {
+        let wifi_clone = detected_wifi_ssid.clone();
+        std::thread::spawn(move || {
+            if let Some(ssid) = fileuc_daemon::wifi::detect_wifi_ssid() {
+                *wifi_clone.lock().unwrap_or_else(|e| e.into_inner()) = Some(ssid);
+            }
+        });
+    }
+    if let Some(link) = prefill_link {
+        card.input_text = link;
+        card.tab = QuickQrTab::Link;
+        card.update_qr();
+    } else if let Some(clip_text) = fileuc_daemon::clipboard::get_clipboard_text() {
+        let trimmed = clip_text.trim();
+        if !trimmed.is_empty() && fileuc_daemon::clipboard::is_url_string(trimmed) {
+            card.input_text = trimmed.to_string();
+            card.tab = QuickQrTab::Link;
+            card.update_qr();
+        }
+    }
+    let (l, t, w, h) = card.card_bounds(hud_center.0 as f32, hud_center.1 as f32);
+    set_mouse_capture_rect(Some((l as i32, t as i32, (l + w) as i32, (t + h) as i32)));
+    set_key_capture(true);
+    render_quick_qr_card(&card, cached_theme, fonts, pixmap);
+    hud.repaint(pixmap);
+    hud.show();
+    *quick_qr_card_state = Some(card);
+    *quick_qr_card_dirty = false;
+}
+
+fn launch_receive_qr_card(
+    settings: &fileuc_settings::store::AppSettings,
+    hud: &mut HudWindow,
+    hud_center: &mut (i32, i32),
+    pixmap: &mut tiny_skia::Pixmap,
+    cached_theme: &Theme,
+    fonts: &FontContext,
+    qr_card_state: &mut Option<QrCardState>,
+    share_server: &mut Option<ShareServerHandle>,
+    receive_server: &mut Option<ReceiveServerHandle>,
+    pinggy_tunnel: &mut Option<fileuc_daemon::pinggy::PinggyTunnel>,
+    cloudflare_tunnel: &mut Option<fileuc_daemon::cloudflared::CloudflareTunnel>,
+    current_files: &mut Vec<PathBuf>,
+    current_actions: &mut Vec<ConversionAction>,
+    progress_tracker: &mut Option<ProgressTracker>,
+) {
+    if qr_card_state.is_some() {
+        dismiss_qr_card(
+            qr_card_state,
+            share_server,
+            receive_server,
+            pinggy_tunnel,
+            cloudflare_tunnel,
+            hud,
+            current_files,
+            current_actions,
+        );
+    }
+
+    let mut pt = windows::Win32::Foundation::POINT::default();
+    unsafe {
+        let _ = windows::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut pt);
+    }
+    *hud_center = hud.position_at_center(pt.x, pt.y);
+    if hud.size() != pixmap.width() {
+        *pixmap = tiny_skia::Pixmap::new(hud.size(), hud.size()).unwrap();
+    }
+
+    let save_dir = settings.effective_receive_folder();
+    let folder_display = format_folder_display(&save_dir);
+    let dpi_scale = hud.dpi_scale();
+
+    match start_receive_server(save_dir).and_then(|handle| {
+        QrCardState::new_with_mode(
+            &handle.url,
+            "Receive from Phone",
+            &folder_display,
+            QrCardMode::ReceiveFromPhone,
+            dpi_scale,
+        )
+        .map(|mut state| {
+            state.is_cloudflared_installed = fileuc_daemon::cloudflared::is_cloudflared_installed();
+            (handle, state)
+        })
+    }) {
+        Ok((handle, state)) => {
+            let (l, t, w, h) = state.card_bounds(hud_center.0 as f32, hud_center.1 as f32);
+            set_mouse_capture_rect(Some((l as i32, t as i32, (l + w) as i32, (t + h) as i32)));
+            set_key_capture(false);
+            render_qr_card(&state, cached_theme, fonts, pixmap);
+            hud.repaint(pixmap);
+            hud.show();
+            *qr_card_state = Some(state);
+            *receive_server = Some(handle);
+        }
+        Err(err) => {
+            let mut tracker = ProgressTracker::new();
+            tracker.mark_failure(err);
+            *progress_tracker = Some(tracker);
+            let half = (44.0 * dpi_scale) as i32;
+            set_mouse_capture_rect(Some((
+                hud_center.0 - half,
+                hud_center.1 - half,
+                hud_center.0 + half,
+                hud_center.1 + half,
+            )));
+            set_key_capture(false);
+            hud.show();
+        }
+    }
 }
 
 fn dismiss_quick_qr_card(

@@ -57,7 +57,7 @@ fn main() {
         let mut res = winres::WindowsResource::new();
         res.set_icon("icon.ico");
         res.set("ProductName", "FileUC");
-        res.set("FileDescription", "FileUC - Universal File Converter");
+        res.set("FileDescription", "FileUC - Universal File Utility");
         res.set("LegalCopyright", "Copyright (C) 2026");
         res.set_manifest(MANIFEST);
 

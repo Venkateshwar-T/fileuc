@@ -91,6 +91,27 @@
           />
         </div>
       </div>
+
+      <div class="h-px bg-dark-border w-full"></div>
+
+      <div>
+        <div class="text-sm font-semibold text-gray-100">Receive from Phone</div>
+        <div class="text-xs text-gray-400 mt-0.5 leading-normal">
+          Optional shortcut to instantly summon the Receive QR code from anywhere
+        </div>
+
+        <div class="mt-2.5">
+          <ShortcutRecorder
+            value={store.settings.receive_shortcut ?? ''}
+            defaultValue=""
+            allowEmpty={true}
+            onchange={(val) => {
+              store.settings.receive_shortcut = val;
+              store.saveSettings();
+            }}
+          />
+        </div>
+      </div>
     </Card>
   </div>
 
@@ -179,6 +200,48 @@
             store.saveSettings();
           }}
         />
+      </div>
+
+      <div class="h-px bg-dark-border w-full"></div>
+
+      <!-- Default Receive Folder Setting -->
+      <div class="space-y-2.5">
+        <div>
+          <div class="text-sm font-semibold text-gray-100">Received Files Location</div>
+          <div class="text-xs text-gray-400 mt-0.5 leading-normal">
+            Folder where files uploaded from your phone are saved
+          </div>
+        </div>
+
+        <div class="flex items-center gap-2 flex-wrap">
+          <div
+            class="flex-1 min-w-0 px-2.5 py-1.5 text-xs text-gray-200 bg-dark-card border border-dark-border rounded-md truncate"
+            title={store.settings.receive_folder ?? '%USERPROFILE%\\Documents\\FileUC Received'}
+          >
+            {store.settings.receive_folder ?? '%USERPROFILE%\\Documents\\FileUC Received'}
+          </div>
+
+          <button
+            type="button"
+            onclick={() => store.pickReceiveFolder()}
+            class="px-3 py-1.5 text-xs font-semibold text-white bg-accent hover:bg-accent-hover rounded-md shadow-sm transition-all duration-150 cursor-pointer shrink-0"
+          >
+            Change Folder
+          </button>
+
+          {#if store.settings.receive_folder}
+            <button
+              type="button"
+              onclick={() => {
+                store.settings.receive_folder = null;
+                store.saveSettings();
+              }}
+              class="px-2.5 py-1.5 text-xs font-medium text-gray-400 hover:text-gray-200 bg-dark-card hover:bg-dark-control border border-dark-border rounded-md transition-colors cursor-pointer shrink-0"
+            >
+              Reset to Default
+            </button>
+          {/if}
+        </div>
       </div>
     </Card>
   </div>

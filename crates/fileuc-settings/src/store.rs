@@ -52,6 +52,10 @@ pub struct AppSettings {
     #[serde(default = "default_search_shortcut")]
     pub search_shortcut: String,
     #[serde(default)]
+    pub receive_shortcut: String,
+    #[serde(default)]
+    pub receive_folder: Option<PathBuf>,
+    #[serde(default)]
     pub hud_style: HudStyleChoice,
     #[serde(default)]
     pub output_mode: OutputMode,
@@ -89,12 +93,40 @@ fn default_accent_color() -> String {
     "#7C5CFC".to_string()
 }
 
+pub fn default_receive_folder() -> PathBuf {
+    if let Ok(profile) = std::env::var("USERPROFILE") {
+        let p = PathBuf::from(profile);
+        if !p.as_os_str().is_empty() {
+            return p.join("Documents").join("FileUC Received");
+        }
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        let p = PathBuf::from(home);
+        if !p.as_os_str().is_empty() {
+            return p.join("Documents").join("FileUC Received");
+        }
+    }
+    PathBuf::from("FileUC Received")
+}
+
+impl AppSettings {
+    pub fn effective_receive_folder(&self) -> PathBuf {
+        self.receive_folder
+            .as_ref()
+            .filter(|p| !p.as_os_str().is_empty())
+            .cloned()
+            .unwrap_or_else(default_receive_folder)
+    }
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
             trigger_modifier: default_trigger_modifier(),
             qr_shortcut: default_qr_shortcut(),
             search_shortcut: default_search_shortcut(),
+            receive_shortcut: String::new(),
+            receive_folder: None,
             hud_style: HudStyleChoice::default(),
             output_mode: OutputMode::default(),
             theme: ThemeChoice::default(),

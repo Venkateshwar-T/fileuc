@@ -47,6 +47,7 @@ pub enum HookEvent {
     },
     QuickQrTriggered,
     SearchShortcutTriggered,
+    ReceiveShortcutTriggered,
 }
 
 #[derive(Debug)]
@@ -70,6 +71,9 @@ static QR_SHORTCUT_MODS: AtomicU8 = AtomicU8::new(0);
 static SEARCH_SHORTCUT_ACTIVE: AtomicBool = AtomicBool::new(false);
 static SEARCH_SHORTCUT_VK: AtomicU32 = AtomicU32::new(0);
 static SEARCH_SHORTCUT_MODS: AtomicU8 = AtomicU8::new(0);
+static RECEIVE_SHORTCUT_ACTIVE: AtomicBool = AtomicBool::new(false);
+static RECEIVE_SHORTCUT_VK: AtomicU32 = AtomicU32::new(0);
+static RECEIVE_SHORTCUT_MODS: AtomicU8 = AtomicU8::new(0);
 static TARGET_THREAD_ID: AtomicU32 = AtomicU32::new(0);
 
 // Fast-path state for low-level hook callbacks: avoids 12 Win32 syscalls and channel locks per mouse move
@@ -118,6 +122,16 @@ pub fn set_search_shortcut(combo: Option<crate::shortcut::ShortcutCombo>) {
         SEARCH_SHORTCUT_ACTIVE.store(true, Ordering::Release);
     } else {
         SEARCH_SHORTCUT_ACTIVE.store(false, Ordering::Release);
+    }
+}
+
+pub fn set_receive_shortcut(combo: Option<crate::shortcut::ShortcutCombo>) {
+    if let Some(c) = combo {
+        RECEIVE_SHORTCUT_VK.store(c.vk, Ordering::Release);
+        RECEIVE_SHORTCUT_MODS.store(c.mods.0, Ordering::Release);
+        RECEIVE_SHORTCUT_ACTIVE.store(true, Ordering::Release);
+    } else {
+        RECEIVE_SHORTCUT_ACTIVE.store(false, Ordering::Release);
     }
 }
 
@@ -301,6 +315,13 @@ unsafe extern "system" fn keyboard_hook_proc(
             && (vk == search_target_vk)
             && (current_mods == search_target_mods);
 
+        let is_receive_active = RECEIVE_SHORTCUT_ACTIVE.load(Ordering::Relaxed);
+        let receive_target_vk = RECEIVE_SHORTCUT_VK.load(Ordering::Relaxed);
+        let receive_target_mods = RECEIVE_SHORTCUT_MODS.load(Ordering::Relaxed);
+        let matches_receive_shortcut = is_receive_active
+            && (vk == receive_target_vk)
+            && (current_mods == receive_target_mods);
+
         if let Some(mod_flag) = is_modifier {
             let mut mods = Modifiers(current_mods);
             if msg == WM_KEYUP || msg == WM_SYSKEYUP {
@@ -343,6 +364,16 @@ unsafe extern "system" fn keyboard_hook_proc(
             }
             return LRESULT(1);
         } else if matches_search_shortcut && (msg == WM_KEYUP || msg == WM_SYSKEYUP) {
+            return LRESULT(1);
+        } else if matches_receive_shortcut && (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) {
+            if let Ok(guard) = SENDER.lock() {
+                if let Some(ref tx) = *guard {
+                    let _ = tx.send(HookEvent::ReceiveShortcutTriggered);
+                    notify_target_thread();
+                }
+            }
+            return LRESULT(1);
+        } else if matches_receive_shortcut && (msg == WM_KEYUP || msg == WM_SYSKEYUP) {
             return LRESULT(1);
         } else if is_capturing && (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) {
             let mods = query_current_modifiers();

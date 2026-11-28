@@ -95,3 +95,27 @@ fn pending_update_cleared_when_current_or_older() {
     let loaded3 = store3.load();
     assert!(loaded3.pending_update.is_none());
 }
+
+#[test]
+fn receive_settings_defaults_and_roundtrip() {
+    use std::path::PathBuf;
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("settings.json");
+    let store = SettingsStore::new(path.clone());
+
+    let mut s = store.load();
+    assert_eq!(s.receive_shortcut, "");
+    assert!(s.receive_folder.is_none());
+    let default_dir = s.effective_receive_folder();
+    assert!(default_dir.ends_with(PathBuf::from("Documents").join("FileUC Received")));
+
+    let custom = tmp.path().join("CustomInbox");
+    s.receive_shortcut = "Ctrl+Shift+R".to_string();
+    s.receive_folder = Some(custom.clone());
+    store.save(&s).unwrap();
+
+    let reloaded = SettingsStore::new(path).load();
+    assert_eq!(reloaded.receive_shortcut, "Ctrl+Shift+R");
+    assert_eq!(reloaded.receive_folder.as_ref(), Some(&custom));
+    assert_eq!(reloaded.effective_receive_folder(), custom);
+}

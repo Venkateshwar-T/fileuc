@@ -2,10 +2,12 @@
   let {
     value = 'Ctrl+Shift+Q',
     defaultValue = 'Ctrl+Shift+Q',
+    allowEmpty = false,
     onchange,
   }: {
     value: string;
     defaultValue?: string;
+    allowEmpty?: boolean;
     onchange: (val: string) => void;
   } = $props();
 
@@ -131,16 +133,24 @@
   {:else}
     <!-- Current Trigger Display (clean standalone badges, no redundant outer box) -->
     <div class="flex items-center gap-1.5" title="Current shortcut trigger">
-      {#each keyBadges as k, idx}
-        <kbd
-          class="px-2 py-0.5 text-[11.5px] font-sans font-medium text-gray-200 bg-dark-card border border-dark-border rounded shadow-sm"
+      {#if keyBadges.length > 0}
+        {#each keyBadges as k, idx}
+          <kbd
+            class="px-2 py-0.5 text-[11.5px] font-sans font-medium text-gray-200 bg-dark-card border border-dark-border rounded shadow-sm"
+          >
+            {k}
+          </kbd>
+          {#if idx < keyBadges.length - 1}
+            <span class="text-[11px] text-gray-500 font-bold">+</span>
+          {/if}
+        {/each}
+      {:else}
+        <span
+          class="px-2 py-0.5 text-[11.5px] font-sans font-medium text-gray-400 bg-dark-card border border-dark-border rounded"
         >
-          {k}
-        </kbd>
-        {#if idx < keyBadges.length - 1}
-          <span class="text-[11px] text-gray-500 font-bold">+</span>
-        {/if}
-      {/each}
+          Not set
+        </span>
+      {/if}
     </div>
 
     <!-- Configure Button (matched to accent color of switches and active tabs) -->
@@ -153,8 +163,17 @@
       Configure
     </button>
 
-    <!-- Restore to Default Button -->
-    {#if isCustom}
+    {#if allowEmpty && value}
+      <button
+        type="button"
+        onclick={() => onchange('')}
+        title="Clear shortcut"
+        class="px-2.5 py-1 text-xs font-medium text-gray-400 hover:text-gray-200 bg-dark-card hover:bg-dark-control border border-dark-border rounded-md transition-colors cursor-pointer"
+      >
+        Clear
+      </button>
+    {:else if isCustom && !allowEmpty}
+      <!-- Restore to Default Button -->
       <button
         type="button"
         onclick={resetToDefault}

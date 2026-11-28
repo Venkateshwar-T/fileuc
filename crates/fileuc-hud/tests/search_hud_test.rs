@@ -396,3 +396,43 @@ fn test_clipboard_preview_overall_bounds() {
     assert!(h2 > h1);
     assert!(w2 >= w1);
 }
+
+#[test]
+fn test_empty_state_receive_send_quick_qr_matching() {
+    let empty_state_actions = vec![
+        ConversionAction::ReceiveFiles,
+        ConversionAction::SendFiles,
+        ConversionAction::QuickQr,
+    ];
+
+    assert_eq!(ConversionAction::ReceiveFiles.label(), "Receive");
+    assert_eq!(ConversionAction::SendFiles.label(), "Send");
+    assert_eq!(ConversionAction::QuickQr.label(), "QR Generator");
+
+    let defaults = match_actions("", &empty_state_actions);
+    assert_eq!(defaults, empty_state_actions);
+    assert!(!defaults.contains(&ConversionAction::Share));
+
+    let recv = match_actions("receive", &empty_state_actions);
+    assert_eq!(recv[0], ConversionAction::ReceiveFiles);
+
+    let upload = match_actions("upload", &empty_state_actions);
+    assert_eq!(upload[0], ConversionAction::ReceiveFiles);
+
+    let send = match_actions("send", &empty_state_actions);
+    assert_eq!(send[0], ConversionAction::SendFiles);
+
+    let qr = match_actions("qr", &empty_state_actions);
+    assert_eq!(qr[0], ConversionAction::QuickQr);
+
+    // Searchable Receive chip even when file conversion & Share actions exist
+    let with_files_actions = vec![
+        ConversionAction::ToPng,
+        ConversionAction::ToWebp,
+        ConversionAction::ReduceSize,
+        ConversionAction::Share,
+        ConversionAction::ReceiveFiles,
+    ];
+    let recv_filtered = match_actions("receive", &with_files_actions);
+    assert_eq!(recv_filtered, vec![ConversionAction::ReceiveFiles]);
+}

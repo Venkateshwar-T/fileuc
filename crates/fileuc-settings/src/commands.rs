@@ -227,3 +227,60 @@ pub fn cancel_active_conversion() -> Result<(), String> {
     notify_daemon(IpcMessage::CancelActiveConversion);
     Ok(())
 }
+
+#[tauri::command]
+pub fn pick_receive_folder() -> Result<Option<String>, String> {
+    std::thread::spawn(|| -> Result<Option<String>, String> {
+        unsafe {
+            use windows::Win32::System::Com::{
+                CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, CLSCTX_ALL,
+                COINIT_APARTMENTTHREADED,
+            };
+            use windows::Win32::UI::Shell::{
+                FileOpenDialog, IFileOpenDialog, FOS_FORCEFILESYSTEM, FOS_NOCHANGEDIR,
+                FOS_PICKFOLDERS, SIGDN_FILESYSPATH,
+            };
+
+            let hr_init = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+            let did_init = hr_init.is_ok();
+
+            let result = (|| -> Result<Option<String>, String> {
+                let dialog: IFileOpenDialog =
+                    CoCreateInstance(&FileOpenDialog, None, CLSCTX_ALL)
+                        .map_err(|e| format!("Failed to open folder dialog: {e}"))?;
+
+                let mut opts = dialog.GetOptions().unwrap_or_default();
+                opts |= FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_NOCHANGEDIR;
+                let _ = dialog.SetOptions(opts);
+                let _ = dialog.SetTitle(w!("Select Default Receive Folder"));
+
+                match dialog.Show(None) {
+                    Ok(()) => {
+                        let item = dialog
+                            .GetResult()
+                            .map_err(|e| format!("Failed to read selected folder: {e}"))?;
+                        let pwstr = item
+                            .GetDisplayName(SIGDN_FILESYSPATH)
+                            .map_err(|e| format!("Failed to read folder path: {e}"))?;
+                        let path_str = pwstr.to_string().unwrap_or_default();
+                        CoTaskMemFree(Some(pwstr.as_ptr() as *const _));
+                        if path_str.is_empty() {
+                            Ok(None)
+                        } else {
+                            Ok(Some(path_str))
+                        }
+                    }
+                    Err(_) => Ok(None),
+                }
+            })();
+
+            if did_init {
+                CoUninitialize();
+            }
+
+            result
+        }
+    })
+    .join()
+    .map_err(|_| "Folder picker thread panicked".to_string())?
+}

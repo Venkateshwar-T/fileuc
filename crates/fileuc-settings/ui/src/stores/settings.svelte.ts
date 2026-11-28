@@ -27,6 +27,8 @@ export interface AppSettings {
   trigger_modifier: string;
   qr_shortcut: string;
   search_shortcut: string;
+  receive_shortcut: string;
+  receive_folder: string | null;
   theme: ThemeChoice;
   accent_color: string;
   ffmpeg_path: string | null;
@@ -57,6 +59,8 @@ export function createSettingsStore() {
     trigger_modifier: 'Ctrl',
     qr_shortcut: 'Ctrl+Shift+Q',
     search_shortcut: 'Ctrl+Space',
+    receive_shortcut: '',
+    receive_folder: null,
     theme: 'System',
     accent_color: '#7066E0',
     ffmpeg_path: null,
@@ -67,6 +71,19 @@ export function createSettingsStore() {
     output_mode: 'ask',
     detailed_progress: false,
   });
+
+  async function pickReceiveFolder(): Promise<string | null> {
+    try {
+      const selected = await invoke<string | null>('pick_receive_folder');
+      if (selected) {
+        settings.receive_folder = selected;
+        await saveSettings();
+      }
+      return selected;
+    } catch {
+      return null;
+    }
+  }
 
   let ffmpeg = $state<PluginState>({
     installed: false,
@@ -412,6 +429,7 @@ export function createSettingsStore() {
     dismissBanner,
     openReleaseUrl,
     startUpdate,
+    pickReceiveFolder,
   };
 }
 

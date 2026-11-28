@@ -134,6 +134,7 @@ pub fn run_tauri(initial_tab: i32) {
             commands::install_update_now,
             commands::get_active_conversion,
             commands::cancel_active_conversion,
+            commands::pick_receive_folder,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::net::{IpAddr, TcpListener, TcpStream, UdpSocket};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
@@ -115,7 +115,7 @@ pub fn get_local_lan_ip() -> Option<IpAddr> {
     None
 }
 
-fn generate_token() -> String {
+pub fn generate_token() -> String {
     #[link(name = "advapi32")]
     extern "system" {
         #[link_name = "SystemFunction036"]
@@ -135,25 +135,52 @@ fn generate_token() -> String {
     }
 }
 
-pub fn start_share_server(files: &[PathBuf]) -> Result<ShareServerHandle, String> {
-    if files.is_empty() {
-        return Err("No files specified for sharing".to_string());
+pub fn constant_time_eq(a: &str, b: &str) -> bool {
+    let ab = a.as_bytes();
+    let bb = b.as_bytes();
+    if ab.len() != bb.len() {
+        return false;
     }
+    let mut diff = 0u8;
+    for (&x, &y) in ab.iter().zip(bb.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
 
+pub(crate) fn bind_local_listener() -> Result<(IpAddr, TcpListener, u16), String> {
     let local_ip = get_local_lan_ip().unwrap_or(IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)));
     let listener = TcpListener::bind("0.0.0.0:0")
         .map_err(|e| format!("Failed to bind TCP listener: {}", e))?;
     listener
         .set_nonblocking(true)
         .map_err(|e| format!("Failed to set nonblocking: {}", e))?;
-
     let port = listener
         .local_addr()
         .map(|a| a.port())
         .map_err(|e| format!("Failed to get local port: {}", e))?;
+    Ok((local_ip, listener, port))
+}
 
-    let token = generate_token();
-    let url = format!("http://{}:{}/s/{}", local_ip, port, token);
+#[derive(Clone)]
+enum SharePayload {
+    File {
+        target_path: PathBuf,
+        display_name: String,
+        file_size: u64,
+        _temp_guard: Arc<Option<NamedTempFile>>,
+    },
+    Text {
+        content: Arc<String>,
+        display_name: String,
+        is_link: bool,
+    },
+}
+
+pub fn start_share_server(files: &[PathBuf]) -> Result<ShareServerHandle, String> {
+    if files.is_empty() {
+        return Err("No files specified for sharing".to_string());
+    }
 
     // Prepare shared file (direct single file or zip package)
     let (target_path, display_name, file_size, temp_guard) = if files.len() == 1 {
@@ -189,22 +216,54 @@ pub fn start_share_server(files: &[PathBuf]) -> Result<ShareServerHandle, String
         (path, "Shared_Files.zip".to_string(), size, Some(temp_file))
     };
 
+    let payload = SharePayload::File {
+        target_path,
+        display_name: display_name.clone(),
+        file_size,
+        _temp_guard: Arc::new(temp_guard),
+    };
+    start_server_with_payload(payload, display_name, file_size)
+}
+
+pub fn start_text_share_server(text: &str, is_link: bool) -> Result<ShareServerHandle, String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Err("Cannot share empty clipboard text".to_string());
+    }
+    let display_name = if is_link {
+        "Clipboard Link".to_string()
+    } else {
+        "Clipboard Text".to_string()
+    };
+    let byte_len = text.len() as u64;
+    let payload = SharePayload::Text {
+        content: Arc::new(text.to_string()),
+        display_name: display_name.clone(),
+        is_link,
+    };
+    start_server_with_payload(payload, display_name, byte_len)
+}
+
+fn start_server_with_payload(
+    payload: SharePayload,
+    display_name: String,
+    file_size: u64,
+) -> Result<ShareServerHandle, String> {
+    let (local_ip, listener, port) = bind_local_listener()?;
+    let token = generate_token();
+    let url = format!("http://{}:{}/s/{}", local_ip, port, token);
+
     let (tx, rx) = mpsc::channel();
     let shutdown = Arc::new(AtomicBool::new(false));
     let shutdown_clone = shutdown.clone();
-
     let token_clone = token.clone();
-    let display_name_clone = display_name.clone();
 
-    let shared_temp = Arc::new(temp_guard);
     let client_streams = Arc::new(std::sync::Mutex::new(HashMap::<u64, TcpStream>::new()));
     let client_streams_clone = client_streams.clone();
     let stream_id_counter = Arc::new(AtomicU64::new(1));
     let active_connections = Arc::new(AtomicUsize::new(0));
 
     let thread = thread::spawn(move || {
-        let keep_temp = shared_temp;
-
         while !shutdown_clone.load(Ordering::Relaxed) {
             match listener.accept() {
                 Ok((mut stream, _)) => {
@@ -225,11 +284,9 @@ pub fn start_share_server(files: &[PathBuf]) -> Result<ShareServerHandle, String
                             lock.insert(stream_id, cloned_sock);
                         }
                     }
-                    let target = target_path.clone();
-                    let name = display_name_clone.clone();
+                    let payload_sub = payload.clone();
                     let tok = token_clone.clone();
                     let tx_sub = tx.clone();
-                    let temp_holder = keep_temp.clone();
                     let streams_for_worker = client_streams_clone.clone();
                     let counter_for_worker = active_connections.clone();
 
@@ -238,7 +295,6 @@ pub fn start_share_server(files: &[PathBuf]) -> Result<ShareServerHandle, String
                             id: u64,
                             streams: Arc<std::sync::Mutex<HashMap<u64, TcpStream>>>,
                             counter: Arc<AtomicUsize>,
-                            _keep_alive: Arc<Option<NamedTempFile>>,
                         }
                         impl Drop for StreamGuard {
                             fn drop(&mut self) {
@@ -253,17 +309,9 @@ pub fn start_share_server(files: &[PathBuf]) -> Result<ShareServerHandle, String
                             id: stream_id,
                             streams: streams_for_worker,
                             counter: counter_for_worker,
-                            _keep_alive: temp_holder,
                         };
 
-                        handle_client(
-                            &mut stream,
-                            &target,
-                            &name,
-                            file_size,
-                            &tok,
-                            &tx_sub,
-                        );
+                        handle_client(&mut stream, &payload_sub, &tok, &tx_sub);
                     });
                 }
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -291,7 +339,7 @@ pub fn start_share_server(files: &[PathBuf]) -> Result<ShareServerHandle, String
     })
 }
 
-fn escape_html(input: &str) -> String {
+pub fn escape_html(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     for c in input.chars() {
         match c {
@@ -357,9 +405,7 @@ fn parse_byte_range(spec: &str, file_size: u64) -> Option<(u64, u64)> {
 
 fn handle_client(
     stream: &mut TcpStream,
-    target_path: &Path,
-    display_name: &str,
-    file_size: u64,
+    payload: &SharePayload,
     token: &str,
     tx: &Sender<ShareServerEvent>,
 ) {
@@ -414,13 +460,31 @@ fn handle_client(
         let no_content = "HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n";
         let _ = stream.write_all(no_content.as_bytes());
         let _ = stream.flush();
+        let _ = stream.shutdown(std::net::Shutdown::Both);
         return;
     }
 
-    let is_share_page = clean_path == format!("/s/{}", token) || clean_path == "/s" || clean_path.is_empty();
+    let is_share_page = clean_path == "/s"
+        || clean_path.is_empty()
+        || clean_path
+            .strip_prefix("/s/")
+            .map(|t| constant_time_eq(t, token))
+            .unwrap_or(false);
+
     if (method == "GET" || method == "HEAD") && is_share_page {
         let _ = tx.send(ShareServerEvent::ClientConnected);
-        let html = generate_mobile_html(display_name, file_size, token);
+        let html = match payload {
+            SharePayload::File {
+                display_name,
+                file_size,
+                ..
+            } => generate_mobile_html(display_name, *file_size, token),
+            SharePayload::Text {
+                content,
+                display_name,
+                is_link,
+            } => generate_text_share_html(display_name, content, *is_link, token),
+        };
         let response = format!(
             "HTTP/1.1 200 OK\r\n\
             Content-Type: text/html; charset=utf-8\r\n\
@@ -432,59 +496,71 @@ fn handle_client(
         );
         let _ = stream.write_all(response.as_bytes());
         let _ = stream.flush();
-    } else if (method == "GET" || method == "HEAD") && clean_path.starts_with(&format!("/d/{}/", token)) {
-        let _ = tx.send(ShareServerEvent::DownloadStarted);
-        let ascii_fallback: String = display_name
-            .chars()
-            .map(|c| {
-                if c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-' {
-                    c
-                } else {
-                    '_'
-                }
-            })
-            .collect();
-        let rfc5987_filename = percent_encode_rfc5987(display_name);
+    } else if (method == "GET" || method == "HEAD")
+        && clean_path
+            .strip_prefix("/d/")
+            .and_then(|rest| rest.split('/').next())
+            .map(|t| constant_time_eq(t, token))
+            .unwrap_or(false)
+    {
+        if let SharePayload::File {
+            target_path,
+            display_name,
+            file_size,
+            ..
+        } = payload
+        {
+            let file_size = *file_size;
+            let _ = tx.send(ShareServerEvent::DownloadStarted);
+            let ascii_fallback: String = display_name
+                .chars()
+                .map(|c| {
+                    if c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-' {
+                        c
+                    } else {
+                        '_'
+                    }
+                })
+                .collect();
+            let rfc5987_filename = percent_encode_rfc5987(display_name);
 
-        if let Some(ref range_str) = range_header {
-            if let Some((start, end)) = parse_byte_range(range_str, file_size) {
-                let content_length = end - start + 1;
-                let header = format!(
-                    "HTTP/1.1 206 Partial Content\r\n\
-                    Content-Type: application/octet-stream\r\n\
-                    Content-Disposition: attachment; filename=\"{}\"; filename*=UTF-8''{}\r\n\
-                    Accept-Ranges: bytes\r\n\
-                    Content-Range: bytes {}-{}/{}\r\n\
-                    Content-Length: {}\r\n\
-                    Connection: close\r\n\
-                    Cache-Control: no-cache, no-store\r\n\r\n",
-                    ascii_fallback, rfc5987_filename, start, end, file_size, content_length
-                );
-                if stream.write_all(header.as_bytes()).is_ok() && method == "GET" {
-                    if let Ok(mut file) = File::open(target_path) {
-                        let _ = file.seek(SeekFrom::Start(start));
-                        let mut take_stream = file.take(content_length);
-                        let _ = std::io::copy(&mut take_stream, stream);
-                        let _ = stream.flush();
-                        if end + 1 >= file_size {
-                            let _ = tx.send(ShareServerEvent::DownloadFinished);
+            if let Some(ref range_str) = range_header {
+                if let Some((start, end)) = parse_byte_range(range_str, file_size) {
+                    let content_length = end - start + 1;
+                    let header = format!(
+                        "HTTP/1.1 206 Partial Content\r\n\
+                        Content-Type: application/octet-stream\r\n\
+                        Content-Disposition: attachment; filename=\"{}\"; filename*=UTF-8''{}\r\n\
+                        Accept-Ranges: bytes\r\n\
+                        Content-Range: bytes {}-{}/{}\r\n\
+                        Content-Length: {}\r\n\
+                        Connection: close\r\n\
+                        Cache-Control: no-cache, no-store\r\n\r\n",
+                        ascii_fallback, rfc5987_filename, start, end, file_size, content_length
+                    );
+                    if stream.write_all(header.as_bytes()).is_ok() && method == "GET" {
+                        if let Ok(mut file) = File::open(target_path) {
+                            let _ = file.seek(SeekFrom::Start(start));
+                            let mut take_stream = file.take(content_length);
+                            let _ = std::io::copy(&mut take_stream, stream);
+                            let _ = stream.flush();
+                            if end + 1 >= file_size {
+                                let _ = tx.send(ShareServerEvent::DownloadFinished);
+                            }
                         }
                     }
+                } else {
+                    let err_resp = format!(
+                        "HTTP/1.1 416 Range Not Satisfiable\r\n\
+                        Content-Range: bytes */{}\r\n\
+                        Content-Length: 0\r\n\
+                        Connection: close\r\n\r\n",
+                        file_size
+                    );
+                    let _ = stream.write_all(err_resp.as_bytes());
+                    let _ = stream.flush();
                 }
-            } else {
-                let err_resp = format!(
-                    "HTTP/1.1 416 Range Not Satisfiable\r\n\
-                    Content-Range: bytes */{}\r\n\
-                    Content-Length: 0\r\n\
-                    Connection: close\r\n\r\n",
-                    file_size
-                );
-                let _ = stream.write_all(err_resp.as_bytes());
-                let _ = stream.flush();
-            }
-        } else {
-            // Full 200 OK response with Accept-Ranges: bytes
-            if let Ok(mut file) = File::open(target_path) {
+            } else if let Ok(mut file) = File::open(target_path) {
                 let header = format!(
                     "HTTP/1.1 200 OK\r\n\
                     Content-Type: application/octet-stream\r\n\
@@ -505,9 +581,21 @@ fn handle_client(
                 let _ = stream.write_all(not_found.as_bytes());
                 let _ = stream.flush();
             }
+        } else {
+            let not_found = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+            let _ = stream.write_all(not_found.as_bytes());
+            let _ = stream.flush();
         }
-    } else if method == "POST" && clean_path == format!("/api/notify/{}", token) {
+    } else if method == "POST"
+        && clean_path
+            .strip_prefix("/api/notify/")
+            .map(|t| constant_time_eq(t, token))
+            .unwrap_or(false)
+    {
         let _ = tx.send(ShareServerEvent::DownloadStarted);
+        if matches!(payload, SharePayload::Text { .. }) {
+            let _ = tx.send(ShareServerEvent::DownloadFinished);
+        }
         let json = "{\"status\":\"ok\"}";
         let response = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -691,4 +779,269 @@ function startDownload() {{
 </script>
 </body>
 </html>"#, escaped_name = escaped_name, size_str = size_str, download_url = download_url, token = token)
+}
+
+fn generate_text_share_html(title: &str, content: &str, is_link: bool, token: &str) -> String {
+    let escaped_title = escape_html(title);
+    let escaped_content = escape_html(content);
+    let char_count = content.chars().count();
+    let subtitle = if is_link {
+        format!("{} chars • Ready to Copy Link", char_count)
+    } else {
+        format!("{} chars • Clipboard Preview", char_count)
+    };
+    let copy_label = if is_link { "Copy Link" } else { "Copy Text" };
+    let trimmed = content.trim();
+    let safe_href = if is_link
+        && (trimmed.starts_with("http://") || trimmed.starts_with("https://"))
+    {
+        Some(escape_html(trimmed))
+    } else {
+        None
+    };
+    let open_link_html = match safe_href {
+        Some(ref href) => format!(
+            r#"<a href="{href}" target="_blank" rel="noopener noreferrer" class="btn secondary-btn">Open Link</a>"#,
+            href = href
+        ),
+        None => String::new(),
+    };
+
+    format!(r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>{escaped_title} • FileUC</title>
+<style>
+:root {{
+  --bg: #F5F6F8;
+  --card: #FFFFFF;
+  --surface: #F8FAFC;
+  --text: #111827;
+  --sub: #6B7280;
+  --border: #E5E7EB;
+  --primary: #7066E0;
+  --primary-hover: #5E54D0;
+  --accent-light: rgba(112, 102, 224, 0.12);
+  --success: #10B981;
+}}
+@media (prefers-color-scheme: dark) {{
+  :root {{
+    --bg: #0F172A;
+    --card: #1E293B;
+    --surface: #0F172A;
+    --text: #F8FAFC;
+    --sub: #94A3B8;
+    --border: #334155;
+    --primary: #7066E0;
+    --primary-hover: #8177EC;
+    --accent-light: rgba(112, 102, 224, 0.20);
+    --success: #10B981;
+  }}
+}}
+* {{ box-sizing: border-box; margin: 0; padding: 0; }}
+body {{
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 20px;
+}}
+.card {{
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 24px;
+  padding: 28px 22px;
+  width: 100%;
+  max-width: 420px;
+  text-align: center;
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.08), 0 8px 10px -6px rgba(0, 0, 0, 0.03);
+}}
+.icon-box {{
+  width: 60px;
+  height: 60px;
+  background: var(--accent-light);
+  border-radius: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto 16px;
+  color: var(--primary);
+}}
+.icon-box svg {{ width: 30px; height: 30px; }}
+h1 {{ font-size: 19px; font-weight: 700; margin-bottom: 4px; }}
+.meta {{ font-size: 13px; color: var(--sub); margin-bottom: 18px; }}
+.preview-box {{
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 14px;
+  text-align: left;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text);
+  max-height: 240px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin-bottom: 18px;
+  user-select: all;
+}}
+.btn {{
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  background: var(--primary);
+  color: #FFFFFF;
+  text-decoration: none;
+  font-size: 15.5px;
+  font-weight: 600;
+  padding: 15px;
+  border-radius: 14px;
+  border: none;
+  cursor: pointer;
+  transition: transform 0.15s ease, background 0.15s ease;
+  box-shadow: 0 4px 14px rgba(112, 102, 224, 0.30);
+}}
+.btn:active {{ transform: scale(0.98); background: var(--primary-hover); }}
+.btn.secondary-btn {{
+  margin-top: 10px;
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
+  box-shadow: none;
+}}
+.status-pill {{
+  display: none;
+  margin-top: 14px;
+  padding: 10px;
+  background: rgba(16, 185, 129, 0.12);
+  color: var(--success);
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 600;
+}}
+.footer {{
+  margin-top: 20px;
+  font-size: 12px;
+  color: var(--sub);
+}}
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="icon-box">
+    <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path>
+    </svg>
+  </div>
+  <h1>{escaped_title}</h1>
+  <div class="meta">{subtitle}</div>
+  <div id="text-preview" class="preview-box">{escaped_content}</div>
+  <button id="copy-btn" type="button" class="btn" onclick="copyText()">
+    {copy_label}
+  </button>
+  {open_link_html}
+  <div id="status-pill" class="status-pill">✓ Copied to Clipboard!</div>
+  <div class="footer">Shared from PC via FileUC</div>
+</div>
+<script>
+async function copyText() {{
+  const el = document.getElementById('text-preview');
+  const raw = el ? el.textContent : '';
+  let ok = false;
+  if (navigator.clipboard && window.isSecureContext) {{
+    try {{
+      await navigator.clipboard.writeText(raw);
+      ok = true;
+    }} catch {{}}
+  }}
+  if (!ok) {{
+    const ta = document.createElement('textarea');
+    ta.value = raw;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    ta.setSelectionRange(0, raw.length);
+    try {{
+      ok = document.execCommand('copy');
+    }} catch {{}}
+    document.body.removeChild(ta);
+  }}
+  const btn = document.getElementById('copy-btn');
+  const pill = document.getElementById('status-pill');
+  if (ok) {{
+    if (btn) btn.textContent = '✓ Copied!';
+    if (pill) pill.style.display = 'block';
+    fetch('/api/notify/{token}', {{ method: 'POST' }}).catch(() => {{}});
+  }}
+}}
+</script>
+</body>
+</html>"#,
+        escaped_title = escaped_title,
+        subtitle = subtitle,
+        escaped_content = escaped_content,
+        copy_label = copy_label,
+        open_link_html = open_link_html,
+        token = token
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_constant_time_eq() {
+        assert!(constant_time_eq("abc123", "abc123"));
+        assert!(!constant_time_eq("abc123", "abc124"));
+        assert!(!constant_time_eq("abc", "abcd"));
+    }
+
+    #[test]
+    fn test_text_share_server_html_and_notify() {
+        let mut handle = start_text_share_server("Hello <script> & link", false).unwrap();
+        let addr = format!("127.0.0.1:{}", handle.port);
+
+        // 1. GET share page
+        let mut s = TcpStream::connect(&addr).unwrap();
+        let req = format!("GET /s/{} HTTP/1.1\r\nHost: localhost\r\n\r\n", handle.token);
+        s.write_all(req.as_bytes()).unwrap();
+        let mut resp = String::new();
+        s.read_to_string(&mut resp).unwrap();
+
+        assert!(resp.starts_with("HTTP/1.1 200 OK"));
+        assert!(resp.contains("Copy Text"));
+        assert!(resp.contains("Hello &lt;script&gt; &amp; link"));
+        assert!(!resp.contains("Download to Device"));
+
+        // 2. POST notify -> DownloadStarted + DownloadFinished
+        let mut s2 = TcpStream::connect(&addr).unwrap();
+        let notify = format!(
+            "POST /api/notify/{} HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n",
+            handle.token
+        );
+        s2.write_all(notify.as_bytes()).unwrap();
+        let mut resp2 = String::new();
+        s2.read_to_string(&mut resp2).unwrap();
+        assert!(resp2.starts_with("HTTP/1.1 200 OK"));
+
+        let ev1 = handle.rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let ev2 = handle.rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let ev3 = handle.rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(ev1, ShareServerEvent::ClientConnected);
+        assert_eq!(ev2, ShareServerEvent::DownloadStarted);
+        assert_eq!(ev3, ShareServerEvent::DownloadFinished);
+
+        handle.stop();
+    }
 }

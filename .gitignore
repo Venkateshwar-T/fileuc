@@ -35,3 +35,5 @@ Thumbs.db
 # Local Automation Scripts & Prompts
 scripts/
 GIT_AUTO_UPDATE.md
+GITHUB_CI_WORKFLOW.md
+GITHUB_RELEASE_WORKFLOW.md

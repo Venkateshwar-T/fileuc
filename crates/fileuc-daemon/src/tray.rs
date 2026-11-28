@@ -23,6 +23,7 @@ pub const WM_TRAY_CALLBACK: u32 = WM_USER + 101;
 pub const TRAY_CMD_SETTINGS: u32 = 1;
 pub const TRAY_CMD_TOGGLE_SERVICE: u32 = 2;
 pub const TRAY_CMD_EXIT: u32 = 3;
+pub const TRAY_CMD_RECEIVE: u32 = 4;
 
 pub const NIN_SELECT: u32 = WM_USER + 0;
 pub const NIN_KEYSELECT: u32 = WM_USER + 1;
@@ -30,6 +31,7 @@ pub const NIN_KEYSELECT: u32 = WM_USER + 1;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrayEvent {
     OpenSettings,
+    ReceiveFiles,
     ToggleService,
     Exit,
 }
@@ -93,6 +95,13 @@ unsafe extern "system" fn tray_wnd_proc(
                             }
                         }
                     }
+                    TRAY_CMD_RECEIVE => {
+                        if let Ok(guard) = TRAY_EVENT_TX.lock() {
+                            if let Some(ref tx) = *guard {
+                                let _ = tx.send(TrayEvent::ReceiveFiles);
+                            }
+                        }
+                    }
                     TRAY_CMD_TOGGLE_SERVICE => {
                         if let Ok(guard) = TRAY_EVENT_TX.lock() {
                             if let Some(ref tx) = *guard {
@@ -120,6 +129,7 @@ pub unsafe fn show_tray_menu(hwnd: HWND) -> Option<u32> {
     let hmenu = CreatePopupMenu().ok()?;
     let _ = AppendMenuW(hmenu, MF_STRING, TRAY_CMD_SETTINGS as usize, w!("Preferences..."));
     let _ = SetMenuDefaultItem(hmenu, TRAY_CMD_SETTINGS, 0);
+    let _ = AppendMenuW(hmenu, MF_STRING, TRAY_CMD_RECEIVE as usize, w!("Receive from Phone"));
     let _ = AppendMenuW(hmenu, MF_SEPARATOR, 0, PCWSTR::null());
 
     let is_enabled = SERVICE_ENABLED.load(Ordering::SeqCst);

@@ -10,10 +10,18 @@ use crate::font::FontContext;
 use crate::qr_encode::QrCode;
 use crate::spring::Spring;
 use crate::theme::Theme;
+use std::path::PathBuf;
 use std::time::Instant;
 use tiny_skia::{
     Color, FillRule, LineCap, LineJoin, Paint, PathBuilder, Pixmap, Rect, Stroke, Transform,
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QrCardMode {
+    SendFiles,
+    SendText,
+    ReceiveFromPhone,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum QrShareStatus {
@@ -31,6 +39,7 @@ pub enum QrShareTab {
 }
 
 pub struct QrCardState {
+    pub mode: QrCardMode,
     pub local_url: String,
     pub internet_url: Option<String>,
     pub tab: QrShareTab,
@@ -44,6 +53,10 @@ pub struct QrCardState {
     pub file_name: String,
     pub file_size_formatted: String,
     pub status: QrShareStatus,
+    pub receive_progress_pct: Option<u8>,
+    pub received_files_count: usize,
+    pub received_target_path: Option<PathBuf>,
+    pub received_is_text: bool,
     pub qr_matrix: Vec<Vec<bool>>,
     pub pop_in: Spring,
     pub badge_spring: Spring,
@@ -63,11 +76,28 @@ impl QrCardState {
         file_size_bytes: u64,
         dpi_scale: f32,
     ) -> Result<Self, String> {
+        Self::new_with_mode(
+            local_url,
+            file_name,
+            &format_file_size(file_size_bytes),
+            QrCardMode::SendFiles,
+            dpi_scale,
+        )
+    }
+
+    pub fn new_with_mode(
+        local_url: &str,
+        title: &str,
+        subtitle_prefix: &str,
+        mode: QrCardMode,
+        dpi_scale: f32,
+    ) -> Result<Self, String> {
         let qr = QrCode::encode_text(local_url)?;
         let mut pop_in = Spring::new(0.0, 750.0, 36.0);
         pop_in.set_target(1.0);
 
         Ok(Self {
+            mode,
             local_url: local_url.to_string(),
             internet_url: None,
             tab: QrShareTab::Local,
@@ -78,9 +108,13 @@ impl QrCardState {
             is_downloading: false,
             download_pct: None,
             is_download_btn_hovered: false,
-            file_name: file_name.to_string(),
-            file_size_formatted: format_file_size(file_size_bytes),
+            file_name: title.to_string(),
+            file_size_formatted: subtitle_prefix.to_string(),
             status: QrShareStatus::WaitingForScan,
+            receive_progress_pct: None,
+            received_files_count: 0,
+            received_target_path: None,
+            received_is_text: false,
             qr_matrix: qr.modules,
             pop_in,
             badge_spring: Spring::new(0.0, 280.0, 24.0),
@@ -145,9 +179,20 @@ impl QrCardState {
     }
 
     pub fn set_sending(&mut self) {
-        if self.status != QrShareStatus::Sending && self.status != QrShareStatus::Success {
+        if self.mode == QrCardMode::ReceiveFromPhone {
+            if self.status != QrShareStatus::Sending {
+                self.status = QrShareStatus::Sending;
+                self.success_time = None;
+                self.received_is_text = false;
+            }
+        } else if self.status != QrShareStatus::Sending && self.status != QrShareStatus::Success {
             self.status = QrShareStatus::Sending;
         }
+    }
+
+    pub fn set_receiving_progress(&mut self, pct: u8) {
+        self.receive_progress_pct = Some(pct.min(100));
+        self.set_sending();
     }
 
     pub fn set_success(&mut self) {
@@ -159,13 +204,45 @@ impl QrCardState {
         }
     }
 
+    pub fn set_receive_files_success(&mut self, count: usize, open_target: std::path::PathBuf) {
+        self.received_files_count = count;
+        self.received_target_path = Some(open_target);
+        self.received_is_text = false;
+        self.receive_progress_pct = Some(100);
+        self.status = QrShareStatus::Success;
+        self.success_time = Some(Instant::now());
+        self.badge_spring = Spring::new(0.0, 280.0, 24.0);
+        self.badge_spring.set_target(1.0);
+    }
+
+    pub fn set_receive_text_success(&mut self) {
+        self.received_is_text = true;
+        self.receive_progress_pct = None;
+        self.status = QrShareStatus::Success;
+        self.success_time = Some(Instant::now());
+        self.badge_spring = Spring::new(0.0, 280.0, 24.0);
+        self.badge_spring.set_target(1.0);
+    }
+
+    pub fn is_open_folder_active(&self) -> bool {
+        self.mode == QrCardMode::ReceiveFromPhone
+            && self.status == QrShareStatus::Success
+            && !self.received_is_text
+            && self.received_target_path.is_some()
+    }
+
     pub fn set_failed(&mut self, reason: &str) {
         self.status = QrShareStatus::Failed(reason.to_string());
     }
 
     pub fn is_finished(&self) -> bool {
         if let Some(t) = self.success_time {
-            t.elapsed().as_secs_f32() > 1.5
+            match self.mode {
+                // Keep Receive popup open after text copy so user can continue sending files or more text
+                QrCardMode::ReceiveFromPhone if self.received_is_text => false,
+                QrCardMode::ReceiveFromPhone => t.elapsed().as_secs_f32() > 10.0,
+                QrCardMode::SendFiles | QrCardMode::SendText => t.elapsed().as_secs_f32() > 1.5,
+            }
         } else {
             false
         }
@@ -379,7 +456,13 @@ pub fn render_qr_card(
     );
 
     let sub_y = cy - (base_h / 2.0 - 45.0 * dpi) * scale;
-    let sub_text = format!("{} • Ready to Download", state.file_size_formatted);
+    let sub_text = match state.mode {
+        QrCardMode::SendFiles => format!("{} • Ready to Download", state.file_size_formatted),
+        QrCardMode::SendText => format!("{} • Ready to Copy", state.file_size_formatted),
+        QrCardMode::ReceiveFromPhone => {
+            format!("Saving to {}", truncate_filename(&state.file_size_formatted, 24))
+        }
+    };
     fonts.draw_text_centered(
         pixmap,
         &sub_text,
@@ -672,9 +755,14 @@ pub fn render_qr_card(
                     theme.slice_hover_fill,
                     true,
                 );
+                let scanned_sub = match state.mode {
+                    QrCardMode::SendFiles => "Tap download on phone to begin",
+                    QrCardMode::SendText => "Preview opened on phone",
+                    QrCardMode::ReceiveFromPhone => "Select files or paste text on phone",
+                };
                 fonts.draw_text_centered(
                     pixmap,
-                    "Tap download on phone to begin",
+                    scanned_sub,
                     cx,
                     instruction_y,
                     13.5 * dpi * scale,
@@ -683,9 +771,24 @@ pub fn render_qr_card(
                 );
             }
             QrShareStatus::Sending => {
+                let sending_title = match state.mode {
+                    QrCardMode::ReceiveFromPhone => {
+                        if let Some(pct) = state.receive_progress_pct {
+                            format!("Receiving from Phone... {}%", pct)
+                        } else {
+                            "Receiving from Phone...".to_string()
+                        }
+                    }
+                    QrCardMode::SendFiles | QrCardMode::SendText => "Sending to Phone...".to_string(),
+                };
+                let sending_sub = match state.mode {
+                    QrCardMode::ReceiveFromPhone => "Uploading files to PC",
+                    QrCardMode::SendText => "Syncing clipboard to device",
+                    QrCardMode::SendFiles => "Downloading file on device",
+                };
                 fonts.draw_text_centered(
                     pixmap,
-                    "Sending to Phone...",
+                    &sending_title,
                     cx,
                     status_y,
                     16.0 * dpi * scale,
@@ -694,7 +797,7 @@ pub fn render_qr_card(
                 );
                 fonts.draw_text_centered(
                     pixmap,
-                    "Downloading file on device",
+                    sending_sub,
                     cx,
                     instruction_y,
                     13.5 * dpi * scale,
@@ -730,9 +833,29 @@ pub fn render_qr_card(
                     }
                 }
 
+                let success_title = match state.mode {
+                    QrCardMode::ReceiveFromPhone if state.received_is_text => {
+                        "Copied to PC Clipboard!".to_string()
+                    }
+                    QrCardMode::ReceiveFromPhone => {
+                        if state.received_files_count == 1 {
+                            "Received 1 File!".to_string()
+                        } else {
+                            format!("Received {} Files!", state.received_files_count)
+                        }
+                    }
+                    QrCardMode::SendText => "Copied to Phone!".to_string(),
+                    QrCardMode::SendFiles => "Downloaded to Phone!".to_string(),
+                };
+                let success_sub = match state.mode {
+                    QrCardMode::ReceiveFromPhone if state.received_is_text => "Ready to paste on PC",
+                    QrCardMode::ReceiveFromPhone => "Saved to destination folder",
+                    QrCardMode::SendFiles | QrCardMode::SendText => "Transfer Complete",
+                };
+
                 fonts.draw_text_centered(
                     pixmap,
-                    "Downloaded to Phone!",
+                    &success_title,
                     cx + 10.0 * dpi * scale,
                     status_y,
                     15.5 * dpi * scale,
@@ -741,7 +864,7 @@ pub fn render_qr_card(
                 );
                 fonts.draw_text_centered(
                     pixmap,
-                    "Transfer Complete",
+                    success_sub,
                     cx,
                     instruction_y,
                     13.0 * dpi * scale,
@@ -771,18 +894,21 @@ pub fn render_qr_card(
             }
         }
 
-        // 9. "Copy Link" Action Button
+        // 9. "Copy Link" / "Open Folder" Action Button
         let copy_btn_w = 210.0 * dpi * scale;
         let copy_btn_h = 32.0 * dpi * scale;
         let copy_btn_left = cx - copy_btn_w / 2.0;
         let copy_btn_top = instruction_y + 14.0 * dpi * scale;
         let copy_btn_r = 8.0 * dpi * scale;
 
-        let is_feedback = state.copy_feedback_timer
-            .map(|t| t.elapsed().as_secs_f32() < 2.0)
-            .unwrap_or(false);
+        let is_open_folder = state.is_open_folder_active();
+        let is_feedback = !is_open_folder
+            && state.copy_feedback_timer
+                .map(|t| t.elapsed().as_secs_f32() < 2.0)
+                .unwrap_or(false);
 
-        let is_generating = state.tab == QrShareTab::Internet
+        let is_generating = !is_open_folder
+            && state.tab == QrShareTab::Internet
             && (state.is_connecting_tunnel || state.internet_url.is_none());
 
         let mut copy_btn_pb = PathBuilder::new();
@@ -852,9 +978,10 @@ pub fn render_qr_card(
                     false,
                 );
             } else {
+                let btn_label = if is_open_folder { "Open Folder" } else { "Copy Link" };
                 fonts.draw_text_centered(
                     pixmap,
-                    "Copy Link",
+                    btn_label,
                     cx,
                     label_y,
                     13.0 * dpi * scale,
@@ -922,5 +1049,59 @@ mod tests {
         card.set_internet_url("https://share-tunnel.trycloudflare.com/share/abc");
         assert_eq!(card.current_share_url(), Some("https://share-tunnel.trycloudflare.com/share/abc"));
         assert!(card.hit_test_copy_btn(rel_x, rel_y, cx, cy));
+    }
+
+    #[test]
+    fn test_qr_card_receive_and_text_modes() {
+        let mut recv = QrCardState::new_with_mode(
+            "http://192.168.1.50:9090/r/tok",
+            "Receive from Phone",
+            "Documents\\FileUC Received",
+            QrCardMode::ReceiveFromPhone,
+            1.0,
+        )
+        .unwrap();
+        assert!(!recv.is_open_folder_active());
+        recv.set_receiving_progress(45);
+        assert_eq!(recv.status, QrShareStatus::Sending);
+        assert_eq!(recv.receive_progress_pct, Some(45));
+
+        recv.set_receive_files_success(2, std::path::PathBuf::from("C:\\tmp\\a.png"));
+        assert_eq!(recv.status, QrShareStatus::Success);
+        assert!(recv.is_open_folder_active());
+        assert!(!recv.is_finished());
+
+        let mut recv_text = QrCardState::new_with_mode(
+            "http://192.168.1.50:9090/r/tok",
+            "Receive from Phone",
+            "Documents\\FileUC Received",
+            QrCardMode::ReceiveFromPhone,
+            1.0,
+        )
+        .unwrap();
+        recv_text.set_receive_text_success();
+        assert_eq!(recv_text.status, QrShareStatus::Success);
+        assert!(recv_text.received_is_text);
+        assert!(!recv_text.is_open_folder_active());
+        // Must remain open so user can still send files or another text afterwards
+        assert!(!recv_text.is_finished());
+
+        // Subsequent file upload transitions cleanly out of text-success back to progress -> file-success
+        recv_text.set_receiving_progress(35);
+        assert_eq!(recv_text.status, QrShareStatus::Sending);
+        assert!(!recv_text.received_is_text);
+        recv_text.set_receive_files_success(1, std::path::PathBuf::from("C:\\tmp\\b.jpg"));
+        assert!(recv_text.is_open_folder_active());
+
+        let text_card = QrCardState::new_with_mode(
+            "http://192.168.1.50:9090/s/tok",
+            "Clipboard Text",
+            "42 B",
+            QrCardMode::SendText,
+            1.0,
+        )
+        .unwrap();
+        assert_eq!(text_card.mode, QrCardMode::SendText);
+        assert!(!text_card.is_open_folder_active());
     }
 }

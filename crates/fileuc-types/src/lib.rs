@@ -61,6 +61,9 @@ pub enum ConversionAction {
     ToOgg,
     ToAac,
     ToFlac,
+    ReceiveFiles,
+    SendFiles,
+    QuickQr,
 }
 
 impl ConversionAction {
@@ -123,12 +126,16 @@ impl ConversionAction {
             ConversionAction::ToOgg => "OGG",
             ConversionAction::ToAac => "AAC",
             ConversionAction::ToFlac => "FLAC",
+            ConversionAction::ReceiveFiles => "Receive",
+            ConversionAction::SendFiles => "Send",
+            ConversionAction::QuickQr => "QR Generator",
         }
     }
 
     pub fn caption(&self) -> &'static str {
         match self {
-            ConversionAction::Share => "Mobile",
+            ConversionAction::Share | ConversionAction::ReceiveFiles | ConversionAction::SendFiles => "Mobile",
+            ConversionAction::QuickQr => "QR Code",
             ConversionAction::CreateZip | ConversionAction::Create7z | ConversionAction::OneZip => "Archive",
             ConversionAction::ExtractArchive => "Unpack",
             ConversionAction::MergePdf => "Combine",
@@ -212,6 +219,9 @@ impl ConversionAction {
             ConversionAction::ToOgg => "Convert to OGG",
             ConversionAction::ToAac => "Convert to AAC",
             ConversionAction::ToFlac => "Convert to FLAC",
+            ConversionAction::ReceiveFiles => "Receive from Phone",
+            ConversionAction::SendFiles => "Send Files to Phone",
+            ConversionAction::QuickQr => "Open Instant QR Generator",
         }
     }
 

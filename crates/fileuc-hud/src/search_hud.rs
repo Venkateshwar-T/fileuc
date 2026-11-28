@@ -232,8 +232,17 @@ fn get_action_aliases(action: ConversionAction) -> &'static [&'static str] {
             "rename", "bulk rename", "batch rename", "rename files", "name", "prefix", "suffix", "numbering",
         ],
         ConversionAction::Share => &[
-            "share", "send", "mobile", "phone", "qr", "qr code", "code", "instant qr", "wifi", "transfer", "airdrop",
-            "share to phone", "share to mobile", "push", "beam", "drop", "receive",
+            "share", "send", "mobile", "phone", "qr", "qr code", "code", "wifi", "transfer", "airdrop",
+            "share to phone", "share to mobile", "push", "beam", "drop",
+        ],
+        ConversionAction::ReceiveFiles => &[
+            "receive", "receive files", "receive from phone", "phone to pc", "get from phone", "upload", "import", "drop",
+        ],
+        ConversionAction::SendFiles => &[
+            "send", "send files", "send to phone", "pick file", "browse", "share", "mobile", "transfer",
+        ],
+        ConversionAction::QuickQr => &[
+            "qr", "qr generator", "instant qr", "quick qr", "create qr", "wifi qr", "link qr", "text qr", "barcode",
         ],
         ConversionAction::CreateZip | ConversionAction::OneZip => &[
             "zip", "archive", "compress to zip", "compress", "zip file", "pack", "bundle",
@@ -440,13 +449,10 @@ pub fn compute_chip_layout(
     let font_size = 16.5 * dpi_scale;
 
     // 1. Measure width of each chip
+    let _ = is_clipboard_link;
     let mut chip_widths = Vec::with_capacity(actions.len());
     for action in actions {
-        let label = if is_clipboard_link && *action == ConversionAction::Share {
-            "QR Code"
-        } else {
-            action.label()
-        };
+        let label = action.label();
         let text_w = fonts.measure_text(label, font_size, true);
         let chip_w = (text_w + pad_x * 2.0).ceil();
         chip_widths.push(chip_w);
@@ -1392,11 +1398,7 @@ pub fn render_search_hud(
         }
 
         // Chip text label
-        let label = if state.is_clipboard_link && action == ConversionAction::Share {
-            "QR Code"
-        } else {
-            action.label()
-        };
+        let label = action.label();
         let txt_color = if is_active {
             Color::WHITE
         } else {
