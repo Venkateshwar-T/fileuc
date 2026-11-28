@@ -102,7 +102,7 @@ export function createSettingsStore() {
   let uninstalledCount = $derived((ffmpeg.installed ? 0 : 1) + (docx.installed ? 0 : 1));
 
   const BLOCKING_CACHE_KEY = 'fileuc_blocking_update';
-  let currentAppVersion = $state<string>('0.1.8');
+  let currentAppVersion = $state<string>('0.1.9');
 
   function readCachedBlockingUpdate(): PendingUpdate | null {
     try {

@@ -9,7 +9,7 @@
 
 ; --- Product Details ---
 !define PRODUCT_NAME "FileUC"
-!define PRODUCT_VERSION "0.1.8"
+!define PRODUCT_VERSION "0.1.9"
 !define PRODUCT_PUBLISHER "FileUC Team"
 !define PRODUCT_WEB_SITE "https://github.com/Venkateshwar-T/fileuc"
 !define PRODUCT_DIR_REGKEY "Software\Microsoft\Windows\CurrentVersion\App Paths\fileuc.exe"
